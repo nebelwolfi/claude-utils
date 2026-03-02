@@ -74,5 +74,4 @@ if (Test-Path $ralphScript) {
     Write-Warning "ralph.ps1 not found in $repoRoot — skipping Ralph-Loop install"
 }
 
-Clear-Host
-Write-Host "Reload your shell: . `"$PROFILE`""
+Write-Host 'Reload your shell: . "$PROFILE"'
