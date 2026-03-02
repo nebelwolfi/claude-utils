@@ -3,14 +3,21 @@
   "version": "1.0.0",
   "description": "Kanban board MCP server with markdown-based storage",
   "type": "module",
-  "main": "index.js",
+  "main": "dist/index.js",
   "bin": {
-    "kanban-mcp": "index.js"
+    "kanban-mcp": "dist/index.js"
   },
   "scripts": {
-    "start": "node index.js"
+    "build": "tsc",
+    "prepare": "tsc",
+    "start": "node dist/index.js"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.0.0"
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.5.0"
   }
 }

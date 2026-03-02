@@ -23,26 +23,30 @@ if (-not $PSScriptRoot -or $PSScriptRoot -eq "") {
 Get-ChildItem -Path $repoRoot -Directory | ForEach-Object {
     $mcpDir = $_.FullName
     $mcpName = $_.Name
-    $entryPoint = $null
 
     $pkg = Join-Path $mcpDir "package.json"
-    if (Test-Path $pkg) {
-        $json = Get-Content $pkg -Raw | ConvertFrom-Json
-        $main = if ($json.main) { $json.main } else { "index.js" }
-        $entryPoint = Join-Path $mcpDir $main
-    }
-
-    if (-not $entryPoint -or -not (Test-Path $entryPoint)) {
-        Write-Warning "Skipping $mcpName — no valid entry point found"
+    if (-not (Test-Path $pkg)) {
+        Write-Warning "Skipping $mcpName — no package.json found"
         return
     }
 
+    # Install dependencies (also triggers prepare/build for TypeScript projects)
     $pkgDir = Join-Path $mcpDir "node_modules"
     if (-not (Test-Path $pkgDir)) {
         Write-Host "Installing dependencies for $mcpName..."
         Push-Location $mcpDir
         npm install --silent
         Pop-Location
+    }
+
+    # Resolve entry point after build
+    $json = Get-Content $pkg -Raw | ConvertFrom-Json
+    $main = if ($json.main) { $json.main } else { "index.js" }
+    $entryPoint = Join-Path $mcpDir $main
+
+    if (-not (Test-Path $entryPoint)) {
+        Write-Warning "Skipping $mcpName — entry point not found: $entryPoint"
+        return
     }
 
     Write-Host "Adding MCP: $mcpName -> $entryPoint"
