@@ -1,0 +1,16 @@
+{
+  "name": "kanban-mcp",
+  "version": "1.0.0",
+  "description": "Kanban board MCP server with markdown-based storage",
+  "type": "module",
+  "main": "index.js",
+  "bin": {
+    "kanban-mcp": "index.js"
+  },
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  }
+}
