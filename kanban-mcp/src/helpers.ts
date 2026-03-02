@@ -7,9 +7,14 @@ export const kanbanPath = (...parts: string[]): string => join(cwd(), KANBAN_DIR
 export const now = (): string => new Date().toISOString();
 
 export function slugify(text: string): string {
-  return text.toLowerCase()
-    .replace(/[^a-z0-9\s-]/g, "")
-    .replace(/\s+/g, "-")
-    .replace(/-+/g, "-")
-    .replace(/^-|-$/g, "");
+  return text
+    .replace(
+      /([A-Z]+(.))/g,
+      (_, separator: string, _letter: string, offset: number) =>
+        (offset ? "-" + separator : separator).toLowerCase()
+    )
+    .split(/[\s!?.,@:;|\\/"'`£$%^&*{}[\]()<>~#+\-=_¬]+/)
+    .filter(Boolean)
+    .join("-")
+    .replace(/(^-|-$)/g, "");
 }

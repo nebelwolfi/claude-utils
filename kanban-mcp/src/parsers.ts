@@ -84,9 +84,12 @@ export function parseRelations(body: string): { relations: Relation[]; body: str
 
   const relations: Relation[] = [];
   for (const line of match[1].split("\n")) {
-    const m = line.match(/^- \[([^\]]+)\]$/);
-    if (m) {
-      const parts = m[1].trim().split(" ");
+    const linkM = line.match(/^- \[([^\]]+)\]\([^)]+\)$/);
+    const bracketM = !linkM && line.match(/^- \[([^\]]+)\]$/);
+    if (linkM) {
+      relations.push({ type: "", taskId: linkM[1].trim() });
+    } else if (bracketM) {
+      const parts = bracketM[1].trim().split(" ");
       const type = parts.length > 1 ? parts[0] : "";
       const taskId = parts.length > 1 ? parts.slice(1).join(" ") : parts[0];
       relations.push({ type, taskId });
@@ -109,7 +112,7 @@ export function serializeBody(description: string, subtasks?: Subtask[], relatio
     if (body) body += "\n\n";
     body += "## Relations\n";
     for (const r of relations)
-      body += `- [${r.type ? r.type + " " : ""}${r.taskId}]\n`;
+      body += r.type ? `- [${r.type} ${r.taskId}]\n` : `- [${r.taskId}](${r.taskId}.md)\n`;
   }
   return body;
 }
