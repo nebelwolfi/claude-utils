@@ -30,14 +30,11 @@ Get-ChildItem -Path $repoRoot -Directory | ForEach-Object {
         return
     }
 
-    # Install dependencies (also triggers prepare/build for TypeScript projects)
-    $pkgDir = Join-Path $mcpDir "node_modules"
-    if (-not (Test-Path $pkgDir)) {
-        Write-Host "Installing dependencies for $mcpName..."
-        Push-Location $mcpDir
-        npm install --silent
-        Pop-Location
-    }
+    # Install dependencies and build (always, to pick up source changes)
+    Write-Host "Installing/building $mcpName..."
+    Push-Location $mcpDir
+    npm install --silent
+    Pop-Location
 
     # Resolve entry point after build
     $json = Get-Content $pkg -Raw | ConvertFrom-Json
@@ -49,7 +46,8 @@ Get-ChildItem -Path $repoRoot -Directory | ForEach-Object {
         return
     }
 
-    Write-Host "Adding MCP: $mcpName -> $entryPoint"
+    Write-Host "Registering MCP: $mcpName -> $entryPoint"
+    claude mcp remove --scope user $mcpName 2>$null
     claude mcp add --scope user $mcpName node $entryPoint
 }
 
