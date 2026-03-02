@@ -1,12 +1,12 @@
 param(
-    [string]$InstallDir = "$env:USERPROFILE\.mcp-servers"
+    [string]$InstallDir = "$env:USERPROFILE\.claude-utils"
 )
 
-$repo = "https://github.com/nebelwolfi/MCP.git"
+$repo = "https://github.com/nebelwolfi/claude-utils.git"
 
 # When invoked via iex/irm, $PSScriptRoot is empty — clone the repo first
 if (-not $PSScriptRoot -or $PSScriptRoot -eq "") {
-    Write-Host "Cloning MCP repo to $InstallDir..."
+    Write-Host "Cloning claude repo to $InstallDir..."
     if (Test-Path $InstallDir) {
         Write-Host "Directory exists, pulling latest..."
         Push-Location $InstallDir
@@ -46,9 +46,31 @@ Get-ChildItem -Path $repoRoot -Directory | ForEach-Object {
         return
     }
 
-    Write-Host "Registering MCP: $mcpName -> $entryPoint"
+    Write-Host "Registering MCP server: $mcpName -> $entryPoint"
     claude mcp remove --scope user $mcpName 2>$null
     claude mcp add --scope user $mcpName node $entryPoint
 }
 
 Write-Host "Done. Run 'claude mcp list' to verify."
+
+# Install Ralph-Loop globally via PowerShell profile
+$ralphScript = Join-Path $repoRoot "ralph.ps1"
+if (Test-Path $ralphScript) {
+    $profileDir = Split-Path $PROFILE -Parent
+    if (-not (Test-Path $profileDir)) {
+        New-Item -Path $profileDir -ItemType Directory -Force | Out-Null
+    }
+    if (-not (Test-Path $PROFILE)) {
+        New-Item $PROFILE -ItemType File -Force | Out-Null
+    }
+    $dotSource = ". `"$ralphScript`""
+    $profileContent = if (Test-Path $PROFILE) { Get-Content $PROFILE -Raw } else { "" }
+    if (-not $profileContent -or -not $profileContent.Contains($ralphScript)) {
+        Add-Content $PROFILE "`n$dotSource"
+        Write-Host "Registered Ralph-Loop in PowerShell profile ($PROFILE)."
+    } else {
+        Write-Host "Ralph-Loop already registered in profile."
+    }
+} else {
+    Write-Warning "ralph.ps1 not found in $repoRoot — skipping Ralph-Loop install"
+}

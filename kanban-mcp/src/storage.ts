@@ -1,8 +1,8 @@
-import { readFile, writeFile, readdir, mkdir, unlink, access } from "node:fs/promises";
-import { basename } from "node:path";
+import { readFile, writeFile, readdir, mkdir, unlink, access, rename } from "node:fs/promises";
+import { basename, dirname } from "node:path";
 import type { Task, BoardIndex } from "./types.js";
 import { TASKS_DIR, INDEX_FILE, DEFAULT_COLUMNS } from "./constants.js";
-import { cwd, kanbanPath, now } from "./helpers.js";
+import { cwd, kanbanPath, localKanbanPath, now } from "./helpers.js";
 import { parseFrontmatter, toMarkdown, parseSubtasks, serializeBody } from "./parsers.js";
 
 export async function boardExists(): Promise<boolean> {
@@ -74,6 +74,12 @@ export async function writeIndex(index: BoardIndex): Promise<void> {
 
 export async function ensureBoard(): Promise<void> {
   if (await boardExists()) return;
+  try {
+    await access(localKanbanPath(INDEX_FILE));
+    await mkdir(dirname(kanbanPath()), { recursive: true });
+    await rename(localKanbanPath(), kanbanPath());
+    return;
+  } catch { /* no local board to migrate */ }
   await mkdir(kanbanPath(TASKS_DIR), { recursive: true });
   await writeIndex({
     name: basename(cwd()),

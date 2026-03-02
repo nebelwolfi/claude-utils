@@ -44,7 +44,7 @@ export async function createTask(params: CreateTaskParams): Promise<Task & { col
 export async function editTask(id: string, updates: Partial<Pick<Task, "title" | "description" | "priority" | "assignee" | "tags">>): Promise<Task> {
   const task = await readTask(id);
   for (const key of ["title", "description", "priority", "assignee", "tags"] as const) {
-    if (updates[key] !== undefined) (task as Record<string, unknown>)[key] = updates[key];
+    if (updates[key] !== undefined) (task as unknown as Record<string, unknown>)[key] = updates[key];
   }
   await writeTask(task);
   return task;

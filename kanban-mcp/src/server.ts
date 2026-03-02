@@ -32,7 +32,7 @@ server.tool("task_create", "Create a new task", {
   position:    z.number().optional().describe("Position in column (0-indexed)"),
   subtasks:    z.array(z.string()).optional().describe("Initial subtask titles"),
 }, wrap(async (p) => {
-  const t = await createTask(p as Parameters<typeof createTask>[0]);
+  const t = await createTask(p as unknown as Parameters<typeof createTask>[0]);
   const subInfo = t.subtasks.length ? ` with ${t.subtasks.length} subtask(s)` : "";
   return `Created task "${t.title}" (${t.id}) in ${t.column}${subInfo}`;
 }));
