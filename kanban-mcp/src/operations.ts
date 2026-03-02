@@ -24,6 +24,7 @@ export async function createTask(params: CreateTaskParams): Promise<Task & { col
     title: params.title,
     description: params.description ?? "",
     subtasks: (params.subtasks ?? []).map((text) => ({ text, completed: false })),
+    relations: [],
     created: now(),
     updated: now(),
     priority: params.priority ?? "medium",

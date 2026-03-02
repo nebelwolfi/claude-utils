@@ -3,11 +3,17 @@ export interface Subtask {
   completed: boolean;
 }
 
+export interface Relation {
+  type: string;
+  taskId: string;
+}
+
 export interface Task {
   id: string;
   title: string;
   description: string;
   subtasks: Subtask[];
+  relations: Relation[];
   created: string;
   updated: string;
   started?: string;

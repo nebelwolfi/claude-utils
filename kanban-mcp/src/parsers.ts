@@ -1,4 +1,4 @@
-import type { Frontmatter, Subtask } from "./types.js";
+import type { Frontmatter, Subtask, Relation } from "./types.js";
 
 export function parseFrontmatter(content: string): { frontmatter: Frontmatter; body: string } {
   const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/);
@@ -78,13 +78,38 @@ export function parseSubtasks(body: string): { subtasks: Subtask[]; description:
   return { subtasks, description };
 }
 
-export function serializeBody(description: string, subtasks?: Subtask[]): string {
+export function parseRelations(body: string): { relations: Relation[]; body: string } {
+  const match = body.match(/\n*## Relations\r?\n([\s\S]*?)(?=\n## |\s*$)/);
+  if (!match) return { relations: [], body };
+
+  const relations: Relation[] = [];
+  for (const line of match[1].split("\n")) {
+    const m = line.match(/^- \[([^\]]+)\]$/);
+    if (m) {
+      const parts = m[1].trim().split(" ");
+      const type = parts.length > 1 ? parts[0] : "";
+      const taskId = parts.length > 1 ? parts.slice(1).join(" ") : parts[0];
+      relations.push({ type, taskId });
+    }
+  }
+
+  const cleanBody = body.replace(/\n*## Relations[\s\S]*?(?=\n## |$)/, "").trim();
+  return { relations, body: cleanBody };
+}
+
+export function serializeBody(description: string, subtasks?: Subtask[], relations?: Relation[]): string {
   let body = description || "";
   if (subtasks && subtasks.length > 0) {
     if (body) body += "\n\n";
     body += "## Sub-tasks\n";
     for (const st of subtasks)
       body += `- [${st.completed ? "x" : " "}] ${st.text}\n`;
+  }
+  if (relations && relations.length > 0) {
+    if (body) body += "\n\n";
+    body += "## Relations\n";
+    for (const r of relations)
+      body += `- [${r.type ? r.type + " " : ""}${r.taskId}]\n`;
   }
   return body;
 }

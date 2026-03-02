@@ -71,12 +71,22 @@ server.tool("task_view", "View a single task's full details including subtasks",
     const done = t.subtasks.filter((s) => s.completed).length;
     out += `- **Subtasks:** ${done}/${t.subtasks.length} complete\n`;
   }
+  if (t.relations?.length) {
+    out += `- **Relations:** ${t.relations.length}\n`;
+  }
   if (t.description) out += `\n---\n\n${t.description}`;
   if (t.subtasks?.length) {
     out += `\n\n## Sub-tasks\n\n`;
     for (let i = 0; i < t.subtasks.length; i++) {
       const s = t.subtasks[i];
       out += `${i}. [${s.completed ? "x" : " "}] ${s.text}\n`;
+    }
+  }
+  if (t.relations?.length) {
+    out += `\n\n## Relations\n\n`;
+    for (let i = 0; i < t.relations.length; i++) {
+      const r = t.relations[i];
+      out += `${i}. **${r.type}** → ${r.taskId}\n`;
     }
   }
   return out;
@@ -118,6 +128,58 @@ server.tool("task_find", "Search and filter tasks", {
     out += `- **${t.title}** (${t.id}) — ${t.column} | ${t.priority}${assignee}${tags}\n`;
   }
   return out.trim();
+}));
+
+server.tool("task_relation", "Manage task relations: add, remove, or list", {
+  id:     z.string().describe("Task ID"),
+  action: z.enum(["add", "remove", "list"]).describe("Action to perform"),
+  type:   z.string().optional().describe("Relation type (e.g. 'blocks', 'blocked by', 'relates to', 'duplicates')"),
+  taskId: z.string().optional().describe("Related task ID (required for add/remove)"),
+  index:  z.number().optional().describe("Relation index to remove (0-based, alternative to taskId+type for remove)"),
+}, wrap(async (p) => {
+  const { id, action, type, taskId, index: idx } = p as {
+    id: string; action: "add" | "remove" | "list"; type?: string; taskId?: string; index?: number;
+  };
+  const task = await readTask(id);
+  if (!task.relations) task.relations = [];
+
+  const { writeTask } = await import("./storage.js");
+
+  switch (action) {
+    case "list": {
+      if (task.relations.length === 0) return `No relations on "${task.title}"`;
+      let out = `Relations for "${task.title}":\n\n`;
+      for (let i = 0; i < task.relations.length; i++) {
+        const r = task.relations[i];
+        out += `${i}. [${r.type ? r.type + " " : ""}${r.taskId}]\n`;
+      }
+      return out.trim();
+    }
+    case "add": {
+      if (!type) throw new Error("type is required for add action");
+      if (!taskId) throw new Error("taskId is required for add action");
+      task.relations.push({ type, taskId });
+      await writeTask(task);
+      return `Added relation "[${type ? type + " " : ""}${taskId}]" to "${task.title}"`;
+    }
+    case "remove": {
+      if (idx !== undefined) {
+        if (idx < 0 || idx >= task.relations.length)
+          throw new Error(`Index ${idx} out of range (0-${task.relations.length - 1})`);
+        const removed = task.relations.splice(idx, 1)[0];
+        await writeTask(task);
+        return `Removed relation "[${removed.type ? removed.type + " " : ""}${removed.taskId}]" from "${task.title}"`;
+      }
+      if (!taskId) throw new Error("taskId or index is required for remove action");
+      const before = task.relations.length;
+      task.relations = task.relations.filter(
+        (r) => !(r.taskId === taskId && (!type || r.type === type))
+      );
+      if (task.relations.length === before) throw new Error(`No matching relation found`);
+      await writeTask(task);
+      return `Removed ${before - task.relations.length} relation(s) from "${task.title}"`;
+    }
+  }
 }));
 
 server.tool("task_subtask", "Manage subtasks: add, toggle, or remove", {

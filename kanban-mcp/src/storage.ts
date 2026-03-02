@@ -3,7 +3,7 @@ import { basename } from "node:path";
 import type { Task, BoardIndex } from "./types.js";
 import { TASKS_DIR, INDEX_FILE, DEFAULT_COLUMNS } from "./constants.js";
 import { cwd, kanbanPath, now } from "./helpers.js";
-import { parseFrontmatter, toMarkdown, parseSubtasks, serializeBody } from "./parsers.js";
+import { parseFrontmatter, toMarkdown, parseSubtasks, parseRelations, serializeBody } from "./parsers.js";
 
 export async function boardExists(): Promise<boolean> {
   try { await access(kanbanPath(INDEX_FILE)); return true; } catch { return false; }
@@ -92,13 +92,15 @@ export async function readTask(id: string): Promise<Task> {
   const title = titleMatch ? titleMatch[1].trim() : id;
 
   const bodyWithoutTitle = body.replace(/^# .+\n+/, "");
-  const { subtasks, description } = parseSubtasks(bodyWithoutTitle);
+  const { relations, body: bodyWithoutRelations } = parseRelations(bodyWithoutTitle);
+  const { subtasks, description } = parseSubtasks(bodyWithoutRelations);
 
   return {
     id,
     title,
-    description: description.replace(/\n*## Relations[\s\S]*$/, "").trim(),
+    description: description.trim(),
     subtasks,
+    relations,
     created: (frontmatter.created as string) ?? now(),
     updated: (frontmatter.updated as string) ?? now(),
     started: frontmatter.started as string | undefined,
@@ -122,7 +124,7 @@ export async function writeTask(task: Task): Promise<void> {
   if (task.assignee)  fm.assignee  = task.assignee;
   if (task.tags?.length) fm.tags   = task.tags;
 
-  const content = serializeBody(task.description, task.subtasks);
+  const content = serializeBody(task.description, task.subtasks, task.relations);
   const body = `# ${task.title}` + (content ? `\n\n${content}` : "");
 
   await writeFile(kanbanPath(TASKS_DIR, `${task.id}.md`), toMarkdown(fm, body));
