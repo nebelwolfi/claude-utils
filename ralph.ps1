@@ -1654,8 +1654,23 @@ try {
     Write-Log ""
     Write-Log "Phase 3: Monitoring workers..."
     $noCommitCounts = @{} # Track consecutive NO_COMMITS per task::subtask
-    while ($activeJobs.Count -gt 0 -and -not $boardComplete) {
-        Start-Sleep -Seconds 10
+    $shutdownRequested = $false
+    [Console]::TreatControlCAsInput = $true
+
+    while ($activeJobs.Count -gt 0 -and -not $boardComplete -and -not $shutdownRequested) {
+        # Poll for Ctrl+C during the 10-second wait
+        for ($tick = 0; $tick -lt 20; $tick++) {
+            Start-Sleep -Milliseconds 500
+            while ([Console]::KeyAvailable) {
+                $key = [Console]::ReadKey($true)
+                if ($key.Key -eq 'C' -and ($key.Modifiers -band [ConsoleModifiers]::Control)) {
+                    $shutdownRequested = $true
+                    break
+                }
+            }
+            if ($shutdownRequested) { break }
+        }
+        if ($shutdownRequested) { break }
 
         foreach ($workerId in @($activeJobs.Keys)) {
             $jobInfo = $activeJobs[$workerId]
@@ -2039,6 +2054,24 @@ try {
         }
     }
 
+    # Graceful shutdown: wait for running workers to finish
+    if ($shutdownRequested) {
+        Write-Log ""
+        Write-Log "Ctrl+C received -- waiting for running workers to finish..." "WARN"
+        while ($activeJobs.Count -gt 0) {
+            Start-Sleep -Seconds 5
+            foreach ($workerId in @($activeJobs.Keys)) {
+                $job = $activeJobs[$workerId].Job
+                if ($job.State -ne 'Running') {
+                    $result = Receive-Job $job -ErrorAction SilentlyContinue
+                    Remove-Job $job -Force -ErrorAction SilentlyContinue
+                    $activeJobs.Remove($workerId)
+                    Write-Log "Worker $workerId finished (shutdown drain)" "OK"
+                }
+            }
+        }
+    }
+
     # Stop remaining workers if board is complete
     if ($boardComplete) {
         Write-Log "Board complete! Stopping remaining workers..."
@@ -2050,7 +2083,7 @@ try {
     }
 
     # Phase 3b: Drain any pending ralph PRs before cleanup
-    if (-not $boardComplete) {
+    if (-not $boardComplete -and -not $shutdownRequested) {
         $pendingPRs = Get-PendingRalphPRs
         if ($pendingPRs.Count -gt 0) {
             Write-Log ""
@@ -2153,6 +2186,8 @@ try {
     }
 }
 finally {
+    [Console]::TreatControlCAsInput = $false
+
     # Phase 4: Cleanup
     Write-Host ""
     Write-Log "Phase 4: Cleanup..."
