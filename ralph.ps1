@@ -721,18 +721,34 @@ function Switch-WorktreeToTaskBranch {
         }
 
         $taskBranch = "ralph/$TaskId"
-        git fetch origin $BaseBranchName 2>&1 | Out-Null
-        $checkoutOut = git checkout -b $taskBranch "origin/$BaseBranchName" 2>&1
-        if ($LASTEXITCODE -ne 0) {
-            # Branch already exists — keep accumulated work from previous iterations
-            Write-Log "  Branch $taskBranch already exists, checking out"
-            # Discard dirty .kanbn files (marked assume-unchanged, invisible to git add)
-            # Sync-KanbnToWorktree will overwrite these right after anyway
+        git fetch origin $BaseBranchName $taskBranch 2>&1 | Out-Null
+
+        # Check if local branch already exists
+        $localExists = git rev-parse --verify $taskBranch 2>$null
+        if ($localExists) {
             git checkout -- .kanbn 2>&1 | Out-Null
             $checkoutOut = git checkout $taskBranch 2>&1
             if ($LASTEXITCODE -ne 0) {
                 Write-Log "  Failed to checkout $taskBranch : $checkoutOut" "ERROR"
                 return
+            }
+        } else {
+            # Check if remote branch exists (has prior work)
+            $remoteExists = git rev-parse --verify "origin/$taskBranch" 2>$null
+            if ($remoteExists) {
+                $checkoutOut = git checkout -b $taskBranch "origin/$taskBranch" 2>&1
+                if ($LASTEXITCODE -ne 0) {
+                    Write-Log "  Failed to checkout remote $taskBranch : $checkoutOut" "ERROR"
+                    return
+                }
+                Write-Log "  Checked out existing remote branch: $taskBranch"
+            } else {
+                # Fresh branch from latest base
+                $checkoutOut = git checkout -b $taskBranch "origin/$BaseBranchName" 2>&1
+                if ($LASTEXITCODE -ne 0) {
+                    Write-Log "  Failed to create $taskBranch : $checkoutOut" "ERROR"
+                    return
+                }
             }
         }
     }
