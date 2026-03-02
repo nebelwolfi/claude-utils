@@ -1190,6 +1190,101 @@ function Get-PendingRalphPRs {
     }
 }
 
+function Invoke-DrainPendingPRs {
+    $pendingPRs = @(Get-PendingRalphPRs)
+    if ($pendingPRs.Count -eq 0) {
+        Write-Log "No pending ralph PRs found." "OK"
+        return
+    }
+
+    Write-Log "Found $($pendingPRs.Count) pending PR(s), draining..."
+    # Cap to 1 concurrent merge-review worker — they all run in $MAIN_REPO
+    # and conflict-resolution does git checkout which would race
+    $availableWorkers = @(1)
+    $drainJobs = @{}
+    $drainedPRs = @{}
+
+    foreach ($pr in $pendingPRs) {
+        $prNum = $pr.number
+        $prBranch = $pr.headRefName
+        $mergeable = if ($pr.PSObject.Properties["mergeable"]) { $pr.mergeable } else { "UNKNOWN" }
+        $mergeState = if ($pr.PSObject.Properties["mergeStateStatus"]) { $pr.mergeStateStatus } else { "UNKNOWN" }
+
+        if ($drainedPRs.ContainsKey($prNum)) { continue }
+
+        $hasConflicts = ($mergeable -ieq "CONFLICTING") -or ($mergeState -ieq "DIRTY")
+
+        # Try direct merge for non-conflicting PRs (no worker needed)
+        if (-not $hasConflicts) {
+            Write-Log "  PR #$prNum ($prBranch): attempting direct merge..."
+            if (Merge-CleanPR -PRNumber $prNum -TargetBranch $BaseBranch) {
+                Cleanup-BranchAfterMerge -TaskBranch $prBranch
+                $drainedPRs[$prNum] = $true
+                continue
+            }
+            Write-Log "  PR #${prNum}: direct merge failed, dispatching worker for review" "WARN"
+        }
+
+        # Fall back to worker for conflicts or failed direct merge
+        $pickWorker = $null
+        foreach ($w in $availableWorkers) {
+            if (-not $drainJobs.ContainsKey($w)) {
+                $pickWorker = $w
+                break
+            }
+        }
+
+        # If all workers busy, wait for one to finish
+        if (-not $pickWorker) {
+            while (-not $pickWorker) {
+                Start-Sleep -Seconds 5
+                foreach ($w in @($drainJobs.Keys)) {
+                    $dj = $drainJobs[$w]
+                    if ($dj.Job.State -eq 'Completed' -or $dj.Job.State -eq 'Failed') {
+                        $djResult = Receive-Job $dj.Job -ErrorAction SilentlyContinue
+                        Remove-Job $dj.Job -Force
+                        $djStatus = if ($djResult.Status) { $djResult.Status } else { "UNKNOWN" }
+                        Write-Log "  Worker $w merge review PR #$($dj.PRNumber): $djStatus"
+                        $drainJobs.Remove($w)
+                        $pickWorker = $w
+                        break
+                    }
+                }
+            }
+        }
+
+        $logFile = "$LOG_DIR/worker-$pickWorker.log"
+        Write-Log "  Worker $pickWorker dispatched on merge review: PR #$prNum ($prBranch)$(if ($hasConflicts) { ' [CONFLICTS]' })"
+        $job = Start-MergeReviewWorker `
+            -WorkerId $pickWorker `
+            -PRNumber $prNum `
+            -TaskBranch $prBranch `
+            -TargetBranch $BaseBranch `
+            -HasConflicts $hasConflicts `
+            -LogFile $logFile
+
+        $drainJobs[$pickWorker] = @{ Job = $job; PRNumber = $prNum }
+        $drainedPRs[$prNum] = $true
+    }
+
+    # Wait for remaining jobs
+    while ($drainJobs.Count -gt 0) {
+        Start-Sleep -Seconds 10
+        foreach ($w in @($drainJobs.Keys)) {
+            $dj = $drainJobs[$w]
+            if ($dj.Job.State -eq 'Completed' -or $dj.Job.State -eq 'Failed') {
+                $djResult = Receive-Job $dj.Job -ErrorAction SilentlyContinue
+                Remove-Job $dj.Job -Force
+                $djStatus = if ($djResult.Status) { $djResult.Status } else { "UNKNOWN" }
+                Write-Log "  Worker $w merge review PR #$($dj.PRNumber): $djStatus"
+                $drainJobs.Remove($w)
+            }
+        }
+    }
+
+    Write-Log "Merge-only complete" "OK"
+}
+
 # ============================================================
 # Worker Execution
 # ============================================================
@@ -1275,6 +1370,10 @@ function Start-Worker {
 
 # Handle -Cleanup flag
 if ($Cleanup) {
+    New-Item -Path $WORKTREE_ROOT -ItemType Directory -Force | Out-Null
+    New-Item -Path $LOG_DIR -ItemType Directory -Force | Out-Null
+    Write-Log "Merging pending PRs before cleanup..."
+    Invoke-DrainPendingPRs
     Remove-AllWorktrees
     return
 }
@@ -1297,104 +1396,7 @@ if ($MergeOnly) {
     Write-Log "Merge workers: $mergeWorkers | Base branch: $BaseBranch | Main repo: $MAIN_REPO"
     Write-Host ""
 
-    $pendingPRs = @(Get-PendingRalphPRs)
-    if ($pendingPRs.Count -eq 0) {
-        Write-Log "No pending ralph PRs found." "OK"
-        return
-    }
-
-    Write-Log "Found $($pendingPRs.Count) pending PR(s), draining..."
-    # Cap to 1 concurrent merge-review worker — they all run in $MAIN_REPO
-    # and conflict-resolution does git checkout which would race
-    $availableWorkers = @(1)
-    $drainJobs = @{}
-    $drainedPRs = @{}
-
-    foreach ($pr in $pendingPRs) {
-        $prNum = $pr.number
-        $prBranch = $pr.headRefName
-        $mergeable = if ($pr.PSObject.Properties["mergeable"]) { $pr.mergeable } else { "UNKNOWN" }
-        $mergeState = if ($pr.PSObject.Properties["mergeStateStatus"]) { $pr.mergeStateStatus } else { "UNKNOWN" }
-
-        if ($drainedPRs.ContainsKey($prNum)) { continue }
-
-        $hasConflicts = ($mergeable -ieq "CONFLICTING") -or ($mergeState -ieq "DIRTY")
-
-        # Try direct merge for non-conflicting PRs (no worker needed)
-        if (-not $hasConflicts) {
-            Write-Log "  PR #$prNum ($prBranch): attempting direct merge..."
-            if (Merge-CleanPR -PRNumber $prNum -TargetBranch $BaseBranch) {
-                Cleanup-BranchAfterMerge -TaskBranch $prBranch
-                $drainedPRs[$prNum] = $true
-                continue
-            }
-            Write-Log "  PR #${prNum}: direct merge failed, dispatching worker for review" "WARN"
-        }
-
-        # Fall back to worker for conflicts or failed direct merge
-        $pickWorker = $null
-        foreach ($w in $availableWorkers) {
-            if (-not $drainJobs.ContainsKey($w)) {
-                $pickWorker = $w
-                break
-            }
-        }
-
-        # If all workers busy, wait for one to finish
-        if (-not $pickWorker) {
-            while (-not $pickWorker) {
-                Start-Sleep -Seconds 5
-                foreach ($w in @($drainJobs.Keys)) {
-                    $dj = $drainJobs[$w]
-                    if ($dj.Job.State -eq 'Completed' -or $dj.Job.State -eq 'Failed') {
-                        $djResult = Receive-Job $dj.Job -ErrorAction SilentlyContinue
-                        Remove-Job $dj.Job -Force
-                        $djStatus = if ($djResult.Status) { $djResult.Status } else { "UNKNOWN" }
-                        Write-Log "  Worker $w merge review PR #$($dj.PRNumber): $djStatus"
-                        if ($djStatus -eq "MERGE_REVIEW_DONE") {
-            
-                        }
-                        $drainJobs.Remove($w)
-                        $pickWorker = $w
-                        break
-                    }
-                }
-            }
-        }
-
-        $logFile = "$LOG_DIR/worker-$pickWorker.log"
-        Write-Log "  Worker $pickWorker dispatched on merge review: PR #$prNum ($prBranch)$(if ($hasConflicts) { ' [CONFLICTS]' })"
-        $job = Start-MergeReviewWorker `
-            -WorkerId $pickWorker `
-            -PRNumber $prNum `
-            -TaskBranch $prBranch `
-            -TargetBranch $BaseBranch `
-            -HasConflicts $hasConflicts `
-            -LogFile $logFile
-
-        $drainJobs[$pickWorker] = @{ Job = $job; PRNumber = $prNum }
-        $drainedPRs[$prNum] = $true
-    }
-
-    # Wait for remaining jobs
-    while ($drainJobs.Count -gt 0) {
-        Start-Sleep -Seconds 10
-        foreach ($w in @($drainJobs.Keys)) {
-            $dj = $drainJobs[$w]
-            if ($dj.Job.State -eq 'Completed' -or $dj.Job.State -eq 'Failed') {
-                $djResult = Receive-Job $dj.Job -ErrorAction SilentlyContinue
-                Remove-Job $dj.Job -Force
-                $djStatus = if ($djResult.Status) { $djResult.Status } else { "UNKNOWN" }
-                Write-Log "  Worker $w merge review PR #$($dj.PRNumber): $djStatus"
-                if ($djStatus -eq "MERGE_REVIEW_DONE") {
-    
-                }
-                $drainJobs.Remove($w)
-            }
-        }
-    }
-
-    Write-Log "Merge-only complete" "OK"
+    Invoke-DrainPendingPRs
     return
 }
 
