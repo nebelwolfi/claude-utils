@@ -686,33 +686,41 @@ function New-TaskPR {
 
     Push-Location $MAIN_REPO
     try {
-        $existingPr = gh pr view $taskBranch --json number 2>$null
-        if ($LASTEXITCODE -eq 0 -and $existingPr) {
-            return  # PR already exists
-        }
+        Write-Log "  PR check ${TaskId}..." "DEBUG"
 
-        # Fetch the task branch so local tracking refs are current
+        # Fetch so local tracking refs are current
         # (Publish-WorkerResults pushes from a worktree, so $MAIN_REPO refs are stale)
-        git fetch origin "refs/heads/${taskBranch}:refs/remotes/origin/${taskBranch}" "refs/heads/${BaseBranch}:refs/remotes/origin/${BaseBranch}" 2>$null
+        git fetch origin $taskBranch $BaseBranch 2>$null
         if ($LASTEXITCODE -ne 0) {
-            Write-Log "  PR skip ${TaskId}: fetch failed (branch may not exist on remote)" "WARN"
+            Write-Log "  PR skip ${TaskId}: branch not on remote" "WARN"
             return
         }
 
+        # Check for actual changes vs base branch
         $hasChanges = git cherry "origin/$BaseBranch" "origin/$taskBranch" 2>$null | Select-String '^\+'
         if (-not $hasChanges) {
             Write-Log "  PR skip ${TaskId}: no changes vs $BaseBranch" "WARN"
             return
         }
 
+        # Only skip if there's already an OPEN PR (not merged/closed — those may be stale)
+        $prState = gh pr view $taskBranch --json state --jq .state 2>$null
+        if ($LASTEXITCODE -eq 0 -and $prState -ieq "OPEN") {
+            Write-Log "  PR skip ${TaskId}: open PR exists" "DEBUG"
+            return
+        }
+
         $prUrl = gh pr create --base $BaseBranch --head $taskBranch `
             --title "ralph: $TaskId" `
-            --body "Automated PR for completed task **$TaskId**." 2>&1
+            --body "Automated PR for completed task **$TaskId**." 2>$null
         if ($LASTEXITCODE -eq 0 -and $prUrl) {
-            Write-Log "Created PR for completed task ${TaskId}: $prUrl" "OK"
+            Write-Log "Created PR for ${TaskId}: $prUrl" "OK"
         } else {
-            Write-Log "PR creation failed for ${TaskId}: $prUrl" "WARN"
+            Write-Log "PR create failed for ${TaskId} (exit $LASTEXITCODE)" "WARN"
         }
+    }
+    catch {
+        Write-Log "  PR error ${TaskId}: $_" "ERROR"
     }
     finally {
         Pop-Location
@@ -1534,6 +1542,7 @@ if ($MergeOnly) {
     try {
         New-PRsForDoneTasks
         Invoke-DrainPendingPRs -MergeWorktreePath $mergeWorktreePath
+        Prune-MergedRalphBranches
     }
     finally {
         Remove-MergeWorktree
