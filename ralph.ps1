@@ -211,6 +211,35 @@ function Remove-RalphWorktree {
     # Keep the branch - PRs reference it
 }
 
+function New-MergeWorktree {
+    $worktreePath = "$WORKTREE_ROOT/merge-worker"
+    $branchName = "ralph/merge-worker"
+
+    if (Test-Path $worktreePath) {
+        $null = git -C $MAIN_REPO worktree remove $worktreePath --force 2>$null
+    }
+    $null = git -C $MAIN_REPO branch -D $branchName 2>$null
+
+    $null = git -C $MAIN_REPO worktree add $worktreePath -b $branchName $BaseBranch 2>&1
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $worktreePath)) {
+        Write-Log "Failed to create merge worktree" "ERROR"
+        return $null
+    }
+    Write-Log "Created merge worktree: $worktreePath" "OK"
+
+    return $worktreePath
+}
+
+function Remove-MergeWorktree {
+    $worktreePath = "$WORKTREE_ROOT/merge-worker"
+
+    if (Test-Path $worktreePath) {
+        Write-Log "Removing merge worktree"
+        git -C $MAIN_REPO worktree remove $worktreePath --force 2>$null
+    }
+    $null = git -C $MAIN_REPO branch -D "ralph/merge-worker" 2>$null
+}
+
 function Remove-AllWorktrees {
     Write-Log "Cleaning up all ralph worktrees..."
 
@@ -1213,27 +1242,25 @@ function Start-MergeReviewWorker {
         [string]$TaskBranch,
         [string]$TargetBranch,
         [bool]$HasConflicts,
-        [string]$LogFile
+        [string]$LogFile,
+        [string]$WorktreePath
     )
 
     $prompt = Get-MergeReviewPrompt -PRNumber $PRNumber -TaskBranch $TaskBranch -TargetBranch $TargetBranch -HasConflicts $HasConflicts
 
-    # Merge review runs from the main repo, not a worktree — gh pr checkout / git checkout
-    # need freedom to switch branches which worktrees don't allow
-    $mainRepo = $MAIN_REPO
     $targetBranchCapture = $TargetBranch
 
     $scriptBlock = {
         param(
             [int]$WorkerId,
-            [string]$MainRepo,
+            [string]$WorkDir,
             [int]$PRNumber,
             [string]$Prompt,
             [string]$LogFile,
             [string]$BaseBranch
         )
 
-        Set-Location $MainRepo
+        Set-Location $WorkDir
 
         $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
         Add-Content $LogFile "[$timestamp] Worker $WorkerId - Reviewing PR #$PRNumber"
@@ -1251,7 +1278,7 @@ function Start-MergeReviewWorker {
             return @{ Status = $status; WorkerId = $WorkerId; PRNumber = $PRNumber }
         }
         finally {
-            # Always restore main repo to base branch (merge review may have checked out PR branch)
+            # Restore worktree to base branch (merge review may have checked out PR branch)
             $cur = git rev-parse --abbrev-ref HEAD 2>$null
             if ($cur -and $cur -ne $BaseBranch) {
                 git checkout $BaseBranch 2>&1 | Out-Null
@@ -1260,7 +1287,7 @@ function Start-MergeReviewWorker {
     }
 
     $job = Start-Job -ScriptBlock $scriptBlock -ArgumentList @(
-        $WorkerId, $mainRepo, $PRNumber, $prompt, $LogFile, $targetBranchCapture
+        $WorkerId, $WorktreePath, $PRNumber, $prompt, $LogFile, $targetBranchCapture
     )
 
     return $job
@@ -1282,6 +1309,8 @@ function Get-PendingRalphPRs {
 }
 
 function Invoke-DrainPendingPRs {
+    param([string]$MergeWorktreePath)
+
     $pendingPRs = @(Get-PendingRalphPRs)
     if ($pendingPRs.Count -eq 0) {
         Write-Log "No pending ralph PRs found." "OK"
@@ -1289,8 +1318,7 @@ function Invoke-DrainPendingPRs {
     }
 
     Write-Log "Found $($pendingPRs.Count) pending PR(s), draining..."
-    # Cap to 1 concurrent merge-review worker — they all run in $MAIN_REPO
-    # and conflict-resolution does git checkout which would race
+    # Cap to 1 concurrent merge-review worker
     $availableWorkers = @(1)
     $drainJobs = @{}
     $drainedPRs = @{}
@@ -1352,7 +1380,8 @@ function Invoke-DrainPendingPRs {
             -TaskBranch $prBranch `
             -TargetBranch $BaseBranch `
             -HasConflicts $hasConflicts `
-            -LogFile $logFile
+            -LogFile $logFile `
+            -WorktreePath $MergeWorktreePath
 
         $drainJobs[$pickWorker] = @{ Job = $job; PRNumber = $prNum }
         $drainedPRs[$prNum] = $true
@@ -1487,7 +1516,20 @@ if ($MergeOnly) {
     Write-Log "Merge workers: $mergeWorkers | Base branch: $BaseBranch | Main repo: $MAIN_REPO"
     Write-Host ""
 
-    Invoke-DrainPendingPRs
+    $mergeWorktreePath = New-MergeWorktree
+    if (-not $mergeWorktreePath) {
+        Write-Log "Failed to create merge worktree, aborting" "ERROR"
+        return
+    }
+    Initialize-Submodules -WorktreePath $mergeWorktreePath
+    Patch-ClaudeMD -WorktreePath $mergeWorktreePath
+
+    try {
+        Invoke-DrainPendingPRs -MergeWorktreePath $mergeWorktreePath
+    }
+    finally {
+        Remove-MergeWorktree
+    }
     return
 }
 
@@ -1548,6 +1590,16 @@ try {
     if ($worktrees.Count -eq 0) {
         Write-Log "No worktrees were created successfully. Exiting." "ERROR"
         return
+    }
+
+    # Setup merge worktree for PR review/conflict resolution
+    Write-Log "--- Merge worker setup ---"
+    $mergeWorktreePath = New-MergeWorktree
+    if ($mergeWorktreePath) {
+        Initialize-Submodules -WorktreePath $mergeWorktreePath
+        Patch-ClaudeMD -WorktreePath $mergeWorktreePath
+    } else {
+        Write-Log "Merge worktree creation failed, merge reviews will be skipped" "WARN"
     }
 
     # Sanitize Unicode in task files (em-dashes, smart quotes, etc.)
@@ -1844,8 +1896,8 @@ try {
                         $ncKey = "$($jobInfo.TaskId)::$($jobInfo.ClaimedSubTask)"
                         if ($noCommitCounts.ContainsKey($ncKey)) { $noCommitCounts.Remove($ncKey) }
 
-                        # Cap to 1 concurrent merge-review worker — they all run in $MAIN_REPO
-                        $mergeReviewActive = $false
+                        # Cap to 1 concurrent merge-review worker
+                        $mergeReviewActive = (-not $mergeWorktreePath)
                         foreach ($aj in $activeJobs.Values) {
                             if ($aj.ContainsKey("PRNumber")) {
                                 $mergeReviewActive = $true
@@ -1910,7 +1962,8 @@ try {
                                     -TaskBranch $mergeTarget.TaskBranch `
                                     -TargetBranch $BaseBranch `
                                     -HasConflicts $mergeTarget.HasConflicts `
-                                    -LogFile $logFile
+                                    -LogFile $logFile `
+                                    -WorktreePath $mergeWorktreePath
 
                                 $activeJobs[$workerId] = @{
                                     Job = $newJob
@@ -2003,7 +2056,7 @@ try {
             Write-Log ""
             Write-Log "Phase 3b: Draining $($pendingPRs.Count) pending PR(s)..."
 
-            # Cap to 1 concurrent merge-review worker — they all run in $MAIN_REPO
+            # Cap to 1 concurrent merge-review worker
             $availableWorkers = @(1)
             if ($availableWorkers.Count -gt 0) {
                 $drainJobs = @{}
@@ -2069,7 +2122,8 @@ try {
                         -TaskBranch $prBranch `
                         -TargetBranch $BaseBranch `
                         -HasConflicts $hasConflicts `
-                        -LogFile $logFile
+                        -LogFile $logFile `
+                        -WorktreePath $mergeWorktreePath
 
                     $drainJobs[$pickWorker] = @{ Job = $job; PRNumber = $prNum }
                     $drainedPRs[$prNum] = $true
@@ -2141,6 +2195,7 @@ finally {
     foreach ($w in @($worktrees.Keys)) {
         Remove-RalphWorktree -WorkerId $w
     }
+    Remove-MergeWorktree
 
     # Prune remote+local ralph/* branches (safe now — all worktrees removed, all claims released)
     Prune-MergedRalphBranches
