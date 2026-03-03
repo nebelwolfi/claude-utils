@@ -1,9 +1,37 @@
 import { readFile, writeFile, readdir, mkdir, unlink, access } from "node:fs/promises";
+import { openSync, closeSync, unlinkSync } from "node:fs";
 import { basename } from "node:path";
 import type { Task, BoardIndex } from "./types.js";
 import { TASKS_DIR, INDEX_FILE, DEFAULT_COLUMNS } from "./constants.js";
 import { cwd, kanbanPath, now } from "./helpers.js";
 import { parseFrontmatter, toMarkdown, parseSubtasks, parseRelations, serializeBody } from "./parsers.js";
+
+const LOCK_FILE = ".lock";
+
+export async function withLock<T>(fn: () => Promise<T>): Promise<T> {
+  const lockPath = kanbanPath(LOCK_FILE);
+  const deadline = Date.now() + 10_000;
+
+  while (true) {
+    try {
+      const fd = openSync(lockPath, "wx");
+      closeSync(fd);
+      break;
+    } catch {
+      if (Date.now() > deadline) {
+        try { unlinkSync(lockPath); } catch {}
+        continue;
+      }
+      await new Promise(r => setTimeout(r, 50));
+    }
+  }
+
+  try {
+    return await fn();
+  } finally {
+    try { unlinkSync(lockPath); } catch {}
+  }
+}
 
 export async function boardExists(): Promise<boolean> {
   try { await access(kanbanPath(INDEX_FILE)); return true; } catch { return false; }

@@ -24,6 +24,7 @@ param(
 
 $ErrorActionPreference = 'Continue'
 $MAIN_REPO = (git -C $ProjectDir rev-parse --show-toplevel) -replace '\\', '/'
+$env:KANBAN_ROOT = $MAIN_REPO
 
 # Auto-detect default branch if not specified
 if (-not $BaseBranch) {
