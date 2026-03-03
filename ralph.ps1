@@ -299,34 +299,37 @@ function Prune-MergedRalphBranches {
 
     $pruned = 0
 
-    # Delete remote ralph/* branches only when ALL commits are already in master
-    # (git cherry compares patch content, handles rebase merges correctly)
     $remoteBranches = git -C $MAIN_REPO ls-remote --heads origin "ralph/*" 2>$null
-    if ($remoteBranches) {
-        foreach ($line in @($remoteBranches)) {
-            if ($line -match 'refs/heads/(ralph/.+)$') {
-                $remoteBranch = $Matches[1]
-                if ($remoteBranch -match '^ralph/worker-\d+$') { continue }
+    if (-not $remoteBranches) { return }
 
-                # Skip branches for tasks currently claimed by workers
-                $taskId = $remoteBranch -replace '^ralph/', ''
-                if ($script:claimedTasks.ContainsKey($taskId)) { continue }
+    foreach ($line in @($remoteBranches)) {
+        if ($line -match 'refs/heads/(ralph/.+)$') {
+            $remoteBranch = $Matches[1]
+            if ($remoteBranch -match '^ralph/worker-\d+$') { continue }
 
-                # Check if branch has any commits not yet in master (by patch content)
-                $unmerged = git -C $MAIN_REPO cherry "origin/$BaseBranch" "origin/$remoteBranch" 2>$null | Select-String '^\+'
-                if (-not $unmerged) {
-                    git -C $MAIN_REPO push origin --delete $remoteBranch 2>&1 | Out-Null
-                    if ($LASTEXITCODE -eq 0) {
-                        Write-Log "  Pruned remote branch: $remoteBranch" "OK"
-                        $pruned++
-                    }
+            $taskId = $remoteBranch -replace '^ralph/', ''
+            if ($script:claimedTasks.ContainsKey($taskId)) { continue }
+
+            # Check 1: git cherry - all commits already in master by patch content
+            $unmerged = git -C $MAIN_REPO cherry "origin/$BaseBranch" "origin/$remoteBranch" 2>$null | Select-String '^\+'
+
+            # Check 2: if cherry says unmerged, check PR state as fallback
+            # (rebase merges can change patch IDs, making cherry unreliable)
+            $prState = $null
+            if ($unmerged) {
+                $prState = gh pr view $remoteBranch --json state --jq .state 2>$null
+            }
+
+            if (-not $unmerged -or $prState -ieq "MERGED") {
+                git -C $MAIN_REPO push origin --delete $remoteBranch 2>&1 | Out-Null
+                if ($LASTEXITCODE -eq 0) {
+                    $reason = if (-not $unmerged) { "cherry-clean" } else { "PR merged" }
+                    Write-Log "  Pruned remote branch: $remoteBranch ($reason)" "OK"
+                    $pruned++
                 }
             }
         }
     }
-
-    # Local branch cleanup is deferred to Phase 4 (final cleanup)
-    # to avoid deleting branches workers still need
 
     if ($pruned -gt 0) {
         Write-Log "Pruned $pruned merged ralph branch(es)" "OK"
@@ -725,7 +728,7 @@ function New-TaskPR {
             return
         }
 
-        # Only skip if there's already an OPEN PR (not merged/closed — those may be stale)
+        # Only skip if there's already an OPEN PR (not merged/closed - those may be stale)
         $prState = gh pr view $taskBranch --json state --jq .state 2>$null
         if ($LASTEXITCODE -eq 0 -and $prState -ieq "OPEN") {
             Write-Log "  PR skip ${TaskId}: open PR exists" "DEBUG"
@@ -1043,7 +1046,7 @@ function Publish-WorkerResults {
             }
         }
 
-        # 4. Push task branch (no merge/rebase into target — just push as-is)
+        # 4. Push task branch (no merge/rebase into target - just push as-is)
         $pushOut = git push origin "${taskBranch}:${taskBranch}" --force 2>&1
         if ($LASTEXITCODE -ne 0) {
             Write-Log "Worker $WorkerId failed to push $taskBranch : $pushOut" "ERROR"
@@ -1136,7 +1139,7 @@ function Merge-CleanPR {
             return $true
         }
 
-        # Not mergeable — try local rebase + force-push from a worktree
+        # Not mergeable - try local rebase + force-push from a worktree
         if ($WorktreePath -and (Test-Path $WorktreePath)) {
             $prBranch = gh pr view $PRNumber --json headRefName --jq .headRefName 2>$null
             if ($prBranch) {
@@ -1211,7 +1214,7 @@ function Cleanup-BranchAfterMerge {
         $currentBranch = git -C $worktrees[$w] rev-parse --abbrev-ref HEAD 2>$null
         if ($currentBranch -eq $TaskBranch) {
             # Detach HEAD so the branch can be deleted
-            # (can't checkout $BaseBranch — it's already checked out in main repo)
+            # (can't checkout $BaseBranch - it's already checked out in main repo)
             git -C $worktrees[$w] checkout -- .kanbn 2>&1 | Out-Null
             git -C $worktrees[$w] checkout --detach 2>&1 | Out-Null
             break
@@ -1307,7 +1310,7 @@ Steps:
 gh pr diff $PRNumber
 ``````
 
-2. Check for conflict markers in the diff (this is critical — reject if found):
+2. Check for conflict markers in the diff (this is critical - reject if found):
 ``````bash
 gh pr diff $PRNumber | grep -n -E '^[+](<{7} |={7}$|>{7} )'
 ``````
@@ -1327,7 +1330,7 @@ git fetch origin $TargetBranch
 gh pr merge $PRNumber --rebase --delete-branch
 ``````
 
-If the merge still fails, leave the PR open — it will be retried next cycle.
+If the merge still fails, leave the PR open - it will be retried next cycle.
 "@
     }
 }
@@ -1785,7 +1788,7 @@ try {
                 $status = if ($result.Status) { $result.Status } else { "UNKNOWN" }
                 Write-Log "Worker $workerId finished: $status (task: $($jobInfo.TaskId))"
 
-                # Handle merge-review results — skip kanbn publish/task logic
+                # Handle merge-review results - skip kanbn publish/task logic
                 if ($status -eq "MERGE_REVIEW_DONE" -or $status -eq "MERGE_REVIEW_ERROR") {
                     $prNum = if ($jobInfo.ContainsKey("PRNumber")) { $jobInfo.PRNumber } else { "?" }
                     if ($status -eq "MERGE_REVIEW_DONE") {
@@ -1800,7 +1803,7 @@ try {
                     Write-Log "Worker ${workerId}: iteration $totalIterations / $maxIterations (budget)"
                 }
                 else {
-                    # Regular task completion — publish + kanbn handling
+                    # Regular task completion - publish + kanbn handling
                     $claimedSubTask = if ($jobInfo.ContainsKey("ClaimedSubTask")) { $jobInfo.ClaimedSubTask } else { $null }
                     $workerTaskSnapshot = $null
                     $workerColumnSnapshot = $null
@@ -1848,7 +1851,7 @@ try {
                                 Write-Log "Failed to sync claimed subtask to main board: $claimedSubTask" "WARN"
                             }
                         } elseif ($claimedSubTask) {
-                            # Worker completed code but didn't check off kanbn subtask — force-mark it
+                            # Worker completed code but didn't check off kanbn subtask - force-mark it
                             # to prevent infinite re-assignment of already-done work
                             if (Complete-SubTaskInRepo -RepoPath $MAIN_REPO -TaskId $jobInfo.TaskId -SubTaskText $claimedSubTask) {
                                 Write-Log "Force-marked subtask complete (worker had TASK_COMPLETE but didn't check it off): $claimedSubTask" "WARN"
@@ -1943,7 +1946,7 @@ try {
                                     $dispatched = $true
                                     $advanced = $true
                                 } else {
-                                    # All subtasks done — move to Done, create PR, release claim
+                                    # All subtasks done - move to Done, create PR, release claim
                                     Write-Log "All subtasks complete for $($jobInfo.TaskId), moving to Done" "OK"
                                     Push-Location $MAIN_REPO
                                     try {
@@ -2044,7 +2047,7 @@ try {
                             $justReviewedBranch = if ($jobInfo.ContainsKey("TaskBranch")) { $jobInfo.TaskBranch } else { $null }
                             if ($justReviewedBranch -and $prBranch -eq $justReviewedBranch) { continue }
 
-                            # Note: UNKNOWN mergeability is fine — gh pr merge will fail gracefully if conflicts exist
+                            # Note: UNKNOWN mergeability is fine - gh pr merge will fail gracefully if conflicts exist
 
                             $hasConflicts = ($mergeable -ieq "CONFLICTING") -or ($mergeState -ieq "DIRTY")
                             $mergeTarget = @{
@@ -2064,7 +2067,7 @@ try {
                                 if (Merge-CleanPR -PRNumber $mergeTarget.PRNumber -TargetBranch $BaseBranch -WorktreePath $mergeWorktreePath) {
                                     Cleanup-BranchAfterMerge -TaskBranch $mergeTarget.TaskBranch
                                     $needsWorker = $false
-                                    # Don't set $dispatched — let this worker try Priority 2 (claim next task)
+                                    # Don't set $dispatched - let this worker try Priority 2 (claim next task)
                                 }
                             }
 
@@ -2334,7 +2337,7 @@ finally {
     }
     Remove-MergeWorktree
 
-    # Prune remote+local ralph/* branches (safe now — all worktrees removed, all claims released)
+    # Prune remote+local ralph/* branches (safe now - all worktrees removed, all claims released)
     Prune-MergedRalphBranches
 
     # Delete remaining local ralph/* branches (push unpushed work first)
@@ -2348,7 +2351,7 @@ finally {
             # Push any unpushed commits before deleting
             $ahead = git -C $MAIN_REPO log --oneline "origin/${branch}..${branch}" 2>$null
             if (-not $ahead) {
-                # No remote tracking — check against master
+                # No remote tracking - check against master
                 $ahead = git -C $MAIN_REPO log --oneline "master..${branch}" 2>$null
             }
             if ($ahead) {
