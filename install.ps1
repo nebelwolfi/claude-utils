@@ -4,7 +4,7 @@ param(
 
 $repo = "https://github.com/nebelwolfi/claude-utils.git"
 
-# When invoked via iex/irm, $PSScriptRoot is empty — clone the repo first
+# When invoked via iex/irm, $PSScriptRoot is empty - clone the repo first
 if (-not $PSScriptRoot -or $PSScriptRoot -eq "") {
     Write-Host "Cloning claude repo to $InstallDir..."
     if (Test-Path $InstallDir) {
@@ -14,7 +14,7 @@ if (-not $PSScriptRoot -or $PSScriptRoot -eq "") {
         $local = git rev-parse HEAD
         $remote = git rev-parse origin/master
         if ($local -eq $remote) {
-            Write-Host "Already up to date — no updates available."
+            Write-Host "Already up to date - no updates available."
             Pop-Location
             return
         }
@@ -42,7 +42,7 @@ Get-ChildItem -Path $repoRoot -Directory | ForEach-Object {
 
     $pkg = Join-Path $mcpDir "package.json"
     if (-not (Test-Path $pkg)) {
-        Write-Warning "Skipping $mcpName — no package.json found"
+        Write-Warning "Skipping $mcpName - no package.json found"
         return
     }
 
@@ -58,7 +58,7 @@ Get-ChildItem -Path $repoRoot -Directory | ForEach-Object {
     $entryPoint = Join-Path $mcpDir $main
 
     if (-not (Test-Path $entryPoint)) {
-        Write-Warning "Skipping $mcpName — entry point not found: $entryPoint"
+        Write-Warning "Skipping $mcpName - entry point not found: $entryPoint"
         return
     }
 
@@ -87,7 +87,7 @@ if (Test-Path $ralphScript) {
         Write-Host "Ralph-Loop already registered in profile."
     }
 } else {
-    Write-Warning "ralph.ps1 not found in $repoRoot — skipping Ralph-Loop install"
+    Write-Warning "ralph.ps1 not found in $repoRoot - skipping Ralph-Loop install"
 }
 
 # Register Kanban-Open globally via PowerShell profile
@@ -102,7 +102,7 @@ if (Test-Path $webEntry) {
         Write-Host "Kanban-Open already registered in profile."
     }
 } else {
-    Write-Warning "kanban-mcp/dist/web.js not found — skipping Kanban-Open install"
+    Write-Warning "kanban-mcp/dist/web.js not found - skipping Kanban-Open install"
 }
 
 Write-Host 'Reload your shell: . "$PROFILE"'
