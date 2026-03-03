@@ -16,7 +16,7 @@ if (-not $PSScriptRoot -or $PSScriptRoot -eq "") {
         if ($local -eq $remote) {
             Write-Host "Already up to date — no updates available."
             Pop-Location
-            exit 0
+            return
         }
         git reset --hard origin/master --quiet
         Pop-Location
