@@ -86,4 +86,19 @@ if (Test-Path $ralphScript) {
     Write-Warning "ralph.ps1 not found in $repoRoot — skipping Ralph-Loop install"
 }
 
+# Register Kanban-Open globally via PowerShell profile
+$webEntry = Join-Path $repoRoot "kanban-mcp" "dist" "web.js"
+if (Test-Path $webEntry) {
+    $funcDef = "function Kanban-Open { node `"$webEntry`" @args }"
+    $profileContent = if (Test-Path $PROFILE) { Get-Content $PROFILE -Raw } else { "" }
+    if (-not $profileContent -or -not $profileContent.Contains("function Kanban-Open")) {
+        Add-Content $PROFILE "`n$funcDef"
+        Write-Host "Registered Kanban-Open in PowerShell profile."
+    } else {
+        Write-Host "Kanban-Open already registered in profile."
+    }
+} else {
+    Write-Warning "kanban-mcp/dist/web.js not found — skipping Kanban-Open install"
+}
+
 Write-Host 'Reload your shell: . "$PROFILE"'

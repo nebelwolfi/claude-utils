@@ -5,12 +5,14 @@
   "type": "module",
   "main": "dist/index.js",
   "bin": {
-    "kanban-mcp": "dist/index.js"
+    "kanban-mcp": "dist/index.js",
+    "kanban-web": "dist/web.js"
   },
   "scripts": {
-    "build": "tsc",
-    "prepare": "tsc",
-    "start": "node dist/index.js"
+    "build": "tsc && node -e \"require('fs').copyFileSync('src/app.html','dist/app.html')\"",
+    "prepare": "npm run build",
+    "start": "node dist/index.js",
+    "web": "node dist/web.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",

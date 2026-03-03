@@ -2205,12 +2205,12 @@ finally {
         git -C $MAIN_REPO checkout $BaseBranch 2>&1 | Out-Null
     }
 
-    # Move uncompleted claimed tasks back to Todo
+    # Move uncompleted claimed tasks back to In Progress
     if ($script:claimedTasks.Count -gt 0) {
         Push-Location $MAIN_REPO
         try {
             foreach ($taskId in @($script:claimedTasks.Keys)) {
-                kanbn move $taskId -c "Todo" 2>$null | Out-Null
+                kanbn move $taskId -c "In Progress" 2>$null | Out-Null
                 Release-TaskClaim -TaskId $taskId
             }
         }

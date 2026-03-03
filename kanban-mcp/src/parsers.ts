@@ -109,9 +109,10 @@ export function serializeBody(description: string, subtasks?: Subtask[], relatio
   if (relations && relations.length > 0) {
     if (body) body += "\n\n";
     body += "## Relations\n";
-    for (const r of relations)
+    for (const r of relations) {
       const label = r.type ? `${r.type} ${r.taskId}` : r.taskId;
       body += `- [${label}](${r.taskId}.md)\n`;
+    }
   }
   return body;
 }
