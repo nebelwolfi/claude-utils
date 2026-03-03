@@ -86,14 +86,12 @@ export function parseRelations(body: string): { relations: Relation[]; body: str
   for (const line of match[1].split("\n")) {
     const linkM = line.match(/^- \[([^\]]+)\]\([^)]+\)$/);
     const bracketM = !linkM && line.match(/^- \[([^\]]+)\]$/);
-    if (linkM) {
-      relations.push({ type: "", taskId: linkM[1].trim() });
-    } else if (bracketM) {
-      const parts = bracketM[1].trim().split(" ");
-      const type = parts.length > 1 ? parts[0] : "";
-      const taskId = parts.length > 1 ? parts.slice(1).join(" ") : parts[0];
-      relations.push({ type, taskId });
-    }
+    const text = linkM ? linkM[1].trim() : bracketM ? bracketM[1].trim() : null;
+    if (!text) continue;
+    const parts = text.split(" ");
+    const type = parts.length > 1 ? parts[0] : "";
+    const taskId = parts.length > 1 ? parts.slice(1).join(" ") : parts[0];
+    relations.push({ type, taskId });
   }
 
   const cleanBody = body.replace(/\n*## Relations[\s\S]*?(?=\n## |$)/, "").trim();

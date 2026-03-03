@@ -119,7 +119,8 @@ export async function readTask(id: string): Promise<Task> {
   const titleMatch = body.match(/^# (.+)$/m);
   const title = titleMatch ? titleMatch[1].trim() : id;
 
-  const bodyWithoutTitle = body.replace(/^# .+\n+/, "");
+  const stripped = body.replace(/\n---\r?\n[\s\S]*?\r?\n---/g, "").trim();
+  const bodyWithoutTitle = stripped.replace(/^# .+\n*/, "").trim().replace(/^# .+\n*/, "").trim();
   const { relations, body: bodyWithoutRelations } = parseRelations(bodyWithoutTitle);
   const { subtasks, description } = parseSubtasks(bodyWithoutRelations);
 
