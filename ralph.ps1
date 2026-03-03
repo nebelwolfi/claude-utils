@@ -1861,7 +1861,7 @@ try {
                                 $newJob = Start-Worker -WorkerId $workerId -WorktreePath $worktrees[$workerId] `
                                     -TaskId $jobInfo.TaskId -ClaimedSubTask $nextSub -LogFile $logFile -BaseBranchName $BaseBranch
                                 $activeJobs[$workerId] = @{ Job = $newJob; TaskId = $jobInfo.TaskId; ClaimedSubTask = $nextSub }
-                                $dispatched = $true
+                                continue
                             } else {
                                 # Edge case: no subtasks left but Test-AllSubTasksComplete disagreed
                                 Push-Location $MAIN_REPO
