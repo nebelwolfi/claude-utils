@@ -542,6 +542,9 @@ function Complete-SubTaskInRepo {
 
     $newContent = [regex]::Replace($content, $pattern, $replacement)
     if ($newContent -eq $content) {
+        # Check if already marked complete (MCP may have done it directly via KANBAN_ROOT)
+        $alreadyDone = "(?m)^(\s*[-*]\s*)\[x\](\s+$escapedText\s*$)"
+        if ([regex]::IsMatch($content, $alreadyDone)) { return $true }
         return $false
     }
 
@@ -1809,9 +1812,9 @@ try {
                 $workerTaskSnapshot = $null
                 $workerColumnSnapshot = $null
                 if ($status -eq "TASK_COMPLETE") {
-                    # Capture worker-side task state before publish logic potentially strips .kanbn edits.
-                    $workerTaskSnapshot = Get-TaskJson -RepoPath $worktrees[$workerId] -TaskId $jobInfo.TaskId
-                    $workerColumnSnapshot = Get-TaskColumn -RepoPath $worktrees[$workerId] -TaskId $jobInfo.TaskId
+                    # Read task state from main repo (MCP writes there directly via KANBAN_ROOT).
+                    $workerTaskSnapshot = Get-TaskJson -RepoPath $MAIN_REPO -TaskId $jobInfo.TaskId
+                    $workerColumnSnapshot = Get-TaskColumn -RepoPath $MAIN_REPO -TaskId $jobInfo.TaskId
                 }
 
                 # Publish if there are any non-.kanbn changes (regardless of status).
@@ -1934,7 +1937,7 @@ try {
                         $claimedSubTask = $jobInfo.ClaimedSubTask
                         $advanced = $false
                         if ($claimedSubTask) {
-                            $workerTask = Get-TaskJson -RepoPath $worktrees[$workerId] -TaskId $jobInfo.TaskId
+                            $workerTask = Get-TaskJson -RepoPath $MAIN_REPO -TaskId $jobInfo.TaskId
                             $workerChecked = Test-SubTaskComplete -Task $workerTask -SubTaskText $claimedSubTask
                             if ($workerChecked) {
                                 # Sync to main repo (mirrors TASK_COMPLETE path)
