@@ -638,15 +638,21 @@ function Get-CheckedOutTaskBranches {
 }
 
 function Get-BlockerTaskIds {
-    param($TaskObj, [hashtable]$DoneTasks, [hashtable]$PRTasks = @{})
+    param($TaskObj, [string]$TaskId = "", [hashtable]$DoneTasks, [hashtable]$PRTasks = @{}, [hashtable]$ReverseBlockedBy = @{})
     $ids = @()
-    if (-not $TaskObj -or -not $TaskObj.PSObject.Properties["relations"] -or -not $TaskObj.relations) { return $ids }
-    foreach ($rel in $TaskObj.relations) {
-        $relType = if ($rel.PSObject.Properties["type"]) { $rel.type } else { "" }
-        if ($relType -imatch '^blocked') {
-            $bid = $rel.taskId
-            if ($bid -imatch '^by\s+(.+)$') { $bid = $Matches[1] }
-            if (-not $DoneTasks.ContainsKey($bid) -and -not $PRTasks.ContainsKey($bid)) { $ids += $bid }
+    if ($TaskObj -and $TaskObj.PSObject.Properties["relations"] -and $TaskObj.relations) {
+        foreach ($rel in $TaskObj.relations) {
+            $relType = if ($rel.PSObject.Properties["type"]) { $rel.type } else { "" }
+            if ($relType -imatch '^blocked|^requires') {
+                $bid = $rel.taskId
+                if ($bid -imatch '^by\s+(.+)$') { $bid = $Matches[1] }
+                if (-not $DoneTasks.ContainsKey($bid) -and -not $PRTasks.ContainsKey($bid)) { $ids += $bid }
+            }
+        }
+    }
+    if ($TaskId -and $ReverseBlockedBy.ContainsKey($TaskId)) {
+        foreach ($bid in $ReverseBlockedBy[$TaskId]) {
+            if (-not $DoneTasks.ContainsKey($bid) -and -not $PRTasks.ContainsKey($bid) -and $bid -notin $ids) { $ids += $bid }
         }
     }
     return $ids
@@ -692,6 +698,7 @@ function Claim-NextTask {
     }
 
     $candidates = [System.Collections.ArrayList]::new()
+    $reverseBlockedBy = @{}
     $columnRank = 0
     foreach ($targetColumn in @($inProgressIndex, $todoIndex, $backlogIndex)) {
         if ($targetColumn -lt 0) { $columnRank++; continue }
@@ -701,32 +708,28 @@ function Claim-NextTask {
             foreach ($task in (Get-ColumnTaskItems -ColumnTasks $lane.columns[$targetColumn])) {
                 $taskId = Get-TaskId -Task $task
                 if (-not $taskId) { continue }
+
+                $taskObj = if ($task.PSObject.Properties["relations"]) { $task } else { Get-TaskJson -RepoPath $MAIN_REPO -TaskId $taskId }
+
+                if ($taskObj -and $taskObj.PSObject.Properties["relations"] -and $taskObj.relations) {
+                    foreach ($rel in $taskObj.relations) {
+                        $relType = if ($rel.PSObject.Properties["type"]) { $rel.type } else { "" }
+                        if ($relType -ieq 'blocks') {
+                            $tid = $rel.taskId
+                            if (-not $reverseBlockedBy.ContainsKey($tid)) { $reverseBlockedBy[$tid] = @() }
+                            $reverseBlockedBy[$tid] += $taskId
+                        }
+                    }
+                }
+
                 if ($script:claimedTasks.ContainsKey($taskId)) { continue }
                 if ($script:completedTasks.ContainsKey($taskId)) { continue }
                 if ($checkedOutBranches.ContainsKey($taskId)) { continue }
 
-                $taskObj = if ($task.PSObject.Properties["relations"]) { $task } else { Get-TaskJson -RepoPath $MAIN_REPO -TaskId $taskId }
-
-                $isBlocked = (Get-BlockerTaskIds -TaskObj $taskObj -DoneTasks $doneTasks -PRTasks $prTasks).Count -gt 0
-
-                $hasPriority = $false
-                if ($taskObj) {
-                    if ($taskObj.PSObject.Properties["tags"] -and $taskObj.tags) {
-                        foreach ($tag in $taskObj.tags) {
-                            if ($tag -ieq "priority") { $hasPriority = $true; break }
-                        }
-                    }
-                    if ($taskObj.PSObject.Properties["priority"] -and $taskObj.priority -in @("high", "critical")) {
-                        $hasPriority = $true
-                    }
-                }
-
                 $candidates.Add(@{
-                    TaskId      = $taskId
-                    TaskObj     = $taskObj
-                    ColumnRank  = $columnRank
-                    IsBlocked   = $isBlocked
-                    HasPriority = $hasPriority
+                    TaskId     = $taskId
+                    TaskObj    = $taskObj
+                    ColumnRank = $columnRank
                 }) | Out-Null
             }
         }
@@ -735,8 +738,29 @@ function Claim-NextTask {
 
     if ($candidates.Count -eq 0) { return $null }
 
+    $isBlockingOthers = @{}
+    foreach ($c in $candidates) {
+        $blockerIds = Get-BlockerTaskIds -TaskObj $c.TaskObj -TaskId $c.TaskId -DoneTasks $doneTasks -PRTasks $prTasks -ReverseBlockedBy $reverseBlockedBy
+        $c.IsBlocked = $blockerIds.Count -gt 0
+        foreach ($bid in $blockerIds) { $isBlockingOthers[$bid] = $true }
+
+        $c.HasPriority = $false
+        if ($c.TaskObj) {
+            if ($c.TaskObj.PSObject.Properties["tags"] -and $c.TaskObj.tags) {
+                foreach ($tag in $c.TaskObj.tags) {
+                    if ($tag -ieq "priority") { $c.HasPriority = $true; break }
+                }
+            }
+            if ($c.TaskObj.PSObject.Properties["priority"] -and $c.TaskObj.priority -in @("high", "critical")) {
+                $c.HasPriority = $true
+            }
+        }
+    }
+    foreach ($c in $candidates) { $c.IsBlocker = $isBlockingOthers.ContainsKey($c.TaskId) }
+
     $sorted = $candidates | Sort-Object -Property @(
         @{ Expression = { [int]$_.IsBlocked }; Descending = $false },
+        @{ Expression = { [int]$_.IsBlocker }; Descending = $true },
         @{ Expression = { [int]$_.HasPriority }; Descending = $true },
         @{ Expression = { $_.ColumnRank }; Descending = $false }
     )
@@ -746,7 +770,7 @@ function Claim-NextTask {
     if ($chosen.IsBlocked) {
         $visited = @{}; $visited[$chosen.TaskId] = $true
         $frontier = [System.Collections.Queue]::new()
-        foreach ($bid in (Get-BlockerTaskIds -TaskObj $chosen.TaskObj -DoneTasks $doneTasks -PRTasks $prTasks)) {
+        foreach ($bid in (Get-BlockerTaskIds -TaskObj $chosen.TaskObj -TaskId $chosen.TaskId -DoneTasks $doneTasks -PRTasks $prTasks -ReverseBlockedBy $reverseBlockedBy)) {
             if (-not $visited.ContainsKey($bid)) { $visited[$bid] = $true; $frontier.Enqueue($bid) }
         }
         $leafCandidates = [System.Collections.ArrayList]::new()
@@ -759,13 +783,14 @@ function Claim-NextTask {
             $existing = $candidates | Where-Object { $_.TaskId -eq $curId } | Select-Object -First 1
             $curObj = if ($existing) { $existing.TaskObj } else { Get-TaskJson -RepoPath $MAIN_REPO -TaskId $curId }
             if (-not $curObj) { continue }
-            $curBlockers = Get-BlockerTaskIds -TaskObj $curObj -DoneTasks $doneTasks -PRTasks $prTasks
+            $curBlockers = Get-BlockerTaskIds -TaskObj $curObj -TaskId $curId -DoneTasks $doneTasks -PRTasks $prTasks -ReverseBlockedBy $reverseBlockedBy
             if ($curBlockers.Count -eq 0) {
                 $hp = $false
                 if ($curObj.PSObject.Properties["tags"] -and $curObj.tags) { foreach ($t in $curObj.tags) { if ($t -ieq "priority") { $hp = $true; break } } }
                 if ($curObj.PSObject.Properties["priority"] -and $curObj.priority -in @("high","critical")) { $hp = $true }
                 $cr = if ($existing) { $existing.ColumnRank } else { 2 }
-                $leafCandidates.Add(@{ TaskId=$curId; TaskObj=$curObj; ColumnRank=$cr; IsBlocked=$false; HasPriority=$hp }) | Out-Null
+                $isBlkr = $isBlockingOthers.ContainsKey($curId)
+                $leafCandidates.Add(@{ TaskId=$curId; TaskObj=$curObj; ColumnRank=$cr; IsBlocked=$false; HasPriority=$hp; IsBlocker=$isBlkr }) | Out-Null
             } else {
                 foreach ($bid in $curBlockers) {
                     if (-not $visited.ContainsKey($bid)) { $visited[$bid] = $true; $frontier.Enqueue($bid) }
@@ -774,6 +799,7 @@ function Claim-NextTask {
         }
         if ($leafCandidates.Count -gt 0) {
             $leafSorted = $leafCandidates | Sort-Object -Property @(
+                @{ Expression = { [int]$_.IsBlocker }; Descending = $true },
                 @{ Expression = { [int]$_.HasPriority }; Descending = $true },
                 @{ Expression = { $_.ColumnRank }; Descending = $false }
             )
