@@ -638,7 +638,7 @@ function Get-CheckedOutTaskBranches {
 }
 
 function Get-BlockerTaskIds {
-    param($TaskObj, [hashtable]$DoneTasks)
+    param($TaskObj, [hashtable]$DoneTasks, [hashtable]$PRTasks = @{})
     $ids = @()
     if (-not $TaskObj -or -not $TaskObj.PSObject.Properties["relations"] -or -not $TaskObj.relations) { return $ids }
     foreach ($rel in $TaskObj.relations) {
@@ -646,7 +646,7 @@ function Get-BlockerTaskIds {
         if ($relType -imatch '^blocked') {
             $bid = $rel.taskId
             if ($bid -imatch '^by\s+(.+)$') { $bid = $Matches[1] }
-            if (-not $DoneTasks.ContainsKey($bid)) { $ids += $bid }
+            if (-not $DoneTasks.ContainsKey($bid) -and -not $PRTasks.ContainsKey($bid)) { $ids += $bid }
         }
     }
     return $ids
@@ -683,6 +683,14 @@ function Claim-NextTask {
     }
     foreach ($tid in $script:completedTasks.Keys) { $doneTasks[$tid] = $true }
 
+    $prTasks = @{}
+    $prBranches = gh pr list --json headRefName --jq '.[].headRefName' 2>$null
+    if ($LASTEXITCODE -eq 0 -and $prBranches) {
+        foreach ($br in ($prBranches -split "`n")) {
+            if ($br -match '^ralph/(.+)$') { $prTasks[$Matches[1]] = $true }
+        }
+    }
+
     $candidates = [System.Collections.ArrayList]::new()
     $columnRank = 0
     foreach ($targetColumn in @($inProgressIndex, $todoIndex, $backlogIndex)) {
@@ -699,7 +707,7 @@ function Claim-NextTask {
 
                 $taskObj = if ($task.PSObject.Properties["relations"]) { $task } else { Get-TaskJson -RepoPath $MAIN_REPO -TaskId $taskId }
 
-                $isBlocked = (Get-BlockerTaskIds -TaskObj $taskObj -DoneTasks $doneTasks).Count -gt 0
+                $isBlocked = (Get-BlockerTaskIds -TaskObj $taskObj -DoneTasks $doneTasks -PRTasks $prTasks).Count -gt 0
 
                 $hasPriority = $false
                 if ($taskObj) {
@@ -738,7 +746,7 @@ function Claim-NextTask {
     if ($chosen.IsBlocked) {
         $visited = @{}; $visited[$chosen.TaskId] = $true
         $frontier = [System.Collections.Queue]::new()
-        foreach ($bid in (Get-BlockerTaskIds -TaskObj $chosen.TaskObj -DoneTasks $doneTasks)) {
+        foreach ($bid in (Get-BlockerTaskIds -TaskObj $chosen.TaskObj -DoneTasks $doneTasks -PRTasks $prTasks)) {
             if (-not $visited.ContainsKey($bid)) { $visited[$bid] = $true; $frontier.Enqueue($bid) }
         }
         $leafCandidates = [System.Collections.ArrayList]::new()
@@ -751,7 +759,7 @@ function Claim-NextTask {
             $existing = $candidates | Where-Object { $_.TaskId -eq $curId } | Select-Object -First 1
             $curObj = if ($existing) { $existing.TaskObj } else { Get-TaskJson -RepoPath $MAIN_REPO -TaskId $curId }
             if (-not $curObj) { continue }
-            $curBlockers = Get-BlockerTaskIds -TaskObj $curObj -DoneTasks $doneTasks
+            $curBlockers = Get-BlockerTaskIds -TaskObj $curObj -DoneTasks $doneTasks -PRTasks $prTasks
             if ($curBlockers.Count -eq 0) {
                 $hp = $false
                 if ($curObj.PSObject.Properties["tags"] -and $curObj.tags) { foreach ($t in $curObj.tags) { if ($t -ieq "priority") { $hp = $true; break } } }
