@@ -3,7 +3,7 @@ import { openSync, closeSync, unlinkSync } from "node:fs";
 import { basename } from "node:path";
 import type { Task, BoardIndex } from "./types.js";
 import { TASKS_DIR, INDEX_FILE, DEFAULT_COLUMNS } from "./constants.js";
-import { cwd, kanbanPath, now } from "./helpers.js";
+import { cwd, kanbanPath, now, sanitizeCP1252 } from "./helpers.js";
 import { parseFrontmatter, toMarkdown, parseSubtasks, parseRelations, serializeBody } from "./parsers.js";
 
 const LOCK_FILE = ".lock";
@@ -97,7 +97,7 @@ export async function writeIndex(index: BoardIndex): Promise<void> {
     }
   }
 
-  await writeFile(kanbanPath(INDEX_FILE), toMarkdown(fm, body));
+  await writeFile(kanbanPath(INDEX_FILE), sanitizeCP1252(toMarkdown(fm, body)));
 }
 
 export async function ensureBoard(): Promise<void> {
@@ -156,7 +156,7 @@ export async function writeTask(task: Task): Promise<void> {
   const content = serializeBody(task.description, task.subtasks, task.relations);
   const body = `# ${task.title}` + (content ? `\n\n${content}` : "");
 
-  await writeFile(kanbanPath(TASKS_DIR, `${task.id}.md`), toMarkdown(fm, body));
+  await writeFile(kanbanPath(TASKS_DIR, `${task.id}.md`), sanitizeCP1252(toMarkdown(fm, body)));
 }
 
 export async function deleteTaskFile(id: string): Promise<void> {
