@@ -173,13 +173,29 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
   }
 }
 
-const port = parseInt(process.argv.find((_, i, a) => a[i - 1] === "--port") ?? "3000", 10);
+const startPort = parseInt(process.argv.find((_, i, a) => a[i - 1] === "--port") ?? "3000", 10);
 const server = createServer(handle);
-server.listen(port, () => {
-  const url = `http://localhost:${port}`;
-  console.log(`Kanban board running at ${url}`);
-  import("node:child_process").then(({ exec }) => {
-    const cmd = process.platform === "win32" ? "start" : process.platform === "darwin" ? "open" : "xdg-open";
-    exec(`${cmd} ${url}`);
-  }).catch(() => {});
-});
+
+function tryListen(port: number): void {
+  server.removeAllListeners("error");
+  server.removeAllListeners("listening");
+  server.once("error", (e: NodeJS.ErrnoException) => {
+    if (e.code === "EADDRINUSE") {
+      console.log(`Port ${port} in use, trying ${port + 1}...`);
+      tryListen(port + 1);
+    } else {
+      throw e;
+    }
+  });
+  server.once("listening", () => {
+    const url = `http://localhost:${port}`;
+    console.log(`Kanban board running at ${url}`);
+    import("node:child_process").then(({ exec }) => {
+      const cmd = process.platform === "win32" ? "start" : process.platform === "darwin" ? "open" : "xdg-open";
+      exec(`${cmd} ${url}`);
+    }).catch(() => {});
+  });
+  server.listen(port);
+}
+
+tryListen(startPort);
