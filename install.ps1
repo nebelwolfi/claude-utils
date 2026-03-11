@@ -1,5 +1,7 @@
 param(
-    [string]$InstallDir = "$env:USERPROFILE\.claude-utils"
+    [string]$InstallDir = "$env:USERPROFILE\.claude-utils",
+    [switch]$All,
+    [switch]$Reconfigure
 )
 
 $repo = "https://github.com/nebelwolfi/claude-utils.git"
@@ -28,81 +30,170 @@ if (-not $PSScriptRoot -or $PSScriptRoot -eq "") {
     $repoRoot = $PSScriptRoot
 }
 
-# Install global dependencies
-if (-not (Get-Command kanbn -ErrorAction SilentlyContinue)) {
-    Write-Host "Installing kanbn globally..."
-    npm install -g @basementuniverse/kanbn --silent
-} else {
-    Write-Host "kanbn already installed, skipping."
+# --- Load saved install state ---
+$installedPath = Join-Path $repoRoot ".installed.json"
+$saved = @{}
+if (Test-Path $installedPath) {
+    $raw = Get-Content $installedPath -Raw | ConvertFrom-Json
+    foreach ($prop in $raw.PSObject.Properties) {
+        $saved[$prop.Name] = [bool]$prop.Value
+    }
 }
 
-Get-ChildItem -Path $repoRoot -Directory | ForEach-Object {
-    $mcpDir = $_.FullName
-    $mcpName = $_.Name
+# --- Discover components ---
+$components = @()
 
-    $pkg = Join-Path $mcpDir "package.json"
-    if (-not (Test-Path $pkg)) {
-        Write-Warning "Skipping $mcpName - no package.json found"
-        return
-    }
+# MCP servers (subdirs with package.json, skip node_modules)
+Get-ChildItem -Path $repoRoot -Directory | Where-Object { $_.Name -ne "node_modules" } | ForEach-Object {
+    $dir = $_.FullName
+    $name = $_.Name
+    $pkg = Join-Path $dir "package.json"
+    if (-not (Test-Path $pkg)) { return }
 
-    # Install dependencies and build (always, to pick up source changes)
-    Write-Host "Installing/building $mcpName..."
-    Push-Location $mcpDir
-    npm install --silent
-    Pop-Location
-
-    # Resolve entry point after build
     $json = Get-Content $pkg -Raw | ConvertFrom-Json
-    $main = if ($json.main) { $json.main } else { "index.js" }
-    $entryPoint = Join-Path $mcpDir $main
+    $cfg = if ($json.installConfig) { $json.installConfig } else { $null }
+    $displayName = if ($cfg -and $cfg.displayName) { $cfg.displayName } else { $name }
 
-    if (-not (Test-Path $entryPoint)) {
-        Write-Warning "Skipping $mcpName - entry point not found: $entryPoint"
-        return
+    $components += @{
+        Name        = $name
+        DisplayName = $displayName
+        Type        = "mcp"
+        Dir         = $dir
+        Config      = $cfg
+        PackageJson = $json
     }
-
-    Write-Host "Registering MCP server: $mcpName -> $entryPoint"
-    claude mcp remove --scope user $mcpName 2>$null
-    claude mcp add --scope user $mcpName node $entryPoint
 }
 
-
-# Install Ralph-Loop globally via PowerShell profile
+# ralph.ps1 as a standalone script component
 $ralphScript = Join-Path $repoRoot "ralph.ps1"
 if (Test-Path $ralphScript) {
-    $profileDir = Split-Path $PROFILE -Parent
-    if (-not (Test-Path $profileDir)) {
-        New-Item -Path $profileDir -ItemType Directory -Force | Out-Null
+    $components += @{
+        Name        = "ralph"
+        DisplayName = "Ralph Worker Loop (ralph.ps1)"
+        Type        = "script"
+        Dir         = $repoRoot
+        Config      = $null
+        Script      = $ralphScript
     }
-    if (-not (Test-Path $PROFILE)) {
-        New-Item $PROFILE -ItemType File -Force | Out-Null
-    }
-    $dotSource = ". `"$ralphScript`""
-    $profileContent = if (Test-Path $PROFILE) { Get-Content $PROFILE -Raw } else { "" }
-    if (-not $profileContent -or -not $profileContent.Contains($ralphScript)) {
-        Add-Content $PROFILE "`n$dotSource"
-        Write-Host "Registered Ralph-Loop in PowerShell profile ($PROFILE)."
-    } else {
-        Write-Host "Ralph-Loop already registered in profile."
-    }
-} else {
-    Write-Warning "ralph.ps1 not found in $repoRoot - skipping Ralph-Loop install"
 }
 
-# Register Kanban-Open globally via PowerShell profile
-$webEntry = Join-Path (Join-Path (Join-Path $repoRoot "kanban-mcp") "dist") "web.js"
-if (Test-Path $webEntry) {
-    $funcDef = "function Kanban-Open { node `"$webEntry`" @args }"
-    $profileContent = if (Test-Path $PROFILE) { Get-Content $PROFILE -Raw } else { "" }
-    if (-not $profileContent -or -not $profileContent.Contains("function Kanban-Open")) {
-        Add-Content $PROFILE "`n$funcDef"
-        Write-Host "Registered Kanban-Open in PowerShell profile."
+# --- Select what to install ---
+$toInstall = @()
+
+foreach ($comp in $components) {
+    $name = $comp.Name
+
+    if ($saved.ContainsKey($name)) {
+        if ($saved[$name]) {
+            Write-Host "  [update] $($comp.DisplayName)"
+            $toInstall += $comp
+        } elseif ($Reconfigure) {
+            $answer = Read-Host "Install $($comp.DisplayName)? (y/N)"
+            if ($answer -match '^[yY]$') {
+                $toInstall += $comp
+            } else {
+                $saved[$name] = $false
+            }
+        } else {
+            Write-Host "  [skip]   $($comp.DisplayName) (previously declined, use -Reconfigure to re-prompt)"
+        }
+    } elseif ($All) {
+        Write-Host "  [new]    $($comp.DisplayName)"
+        $toInstall += $comp
     } else {
-        Write-Host "Kanban-Open already registered in profile."
+        $answer = Read-Host "Install $($comp.DisplayName)? (y/N)"
+        if ($answer -match '^[yY]$') {
+            $toInstall += $comp
+        } else {
+            $saved[$name] = $false
+        }
     }
-} else {
-    Write-Warning "kanban-mcp/dist/web.js not found - skipping Kanban-Open install"
 }
 
+if ($toInstall.Count -eq 0) {
+    Write-Host "Nothing to install."
+    $saved | ConvertTo-Json | Set-Content $installedPath -Encoding UTF8
+    return
+}
+
+# --- Ensure profile exists ---
+$profileDir = Split-Path $PROFILE -Parent
+if (-not (Test-Path $profileDir)) {
+    New-Item -Path $profileDir -ItemType Directory -Force | Out-Null
+}
+if (-not (Test-Path $PROFILE)) {
+    New-Item $PROFILE -ItemType File -Force | Out-Null
+}
+
+# --- Install each component ---
+foreach ($comp in $toInstall) {
+    $name = $comp.Name
+    Write-Host ""
+    Write-Host "--- Installing $($comp.DisplayName) ---"
+
+    if ($comp.Type -eq "mcp") {
+        $cfg = $comp.Config
+
+        # Prerequisites
+        if ($cfg -and $cfg.prerequisites) {
+            foreach ($prereq in $cfg.prerequisites) {
+                $label = if ($prereq.label) { $prereq.label } else { $prereq.command }
+                if (-not (Get-Command $prereq.command -ErrorAction SilentlyContinue)) {
+                    Write-Host "  Installing prerequisite: $label..."
+                    Invoke-Expression $prereq.install
+                } else {
+                    Write-Host "  $label already installed."
+                }
+            }
+        }
+
+        # npm install + build
+        Write-Host "  npm install..."
+        Push-Location $comp.Dir
+        npm install --silent
+        Pop-Location
+
+        # Register MCP server
+        $main = if ($comp.PackageJson.main) { $comp.PackageJson.main } else { "index.js" }
+        $entryPoint = Join-Path $comp.Dir $main
+        if (Test-Path $entryPoint) {
+            Write-Host "  Registering MCP server: $name -> $entryPoint"
+            claude mcp remove --scope user $name 2>$null
+            claude mcp add --scope user $name node $entryPoint
+        } else {
+            Write-Warning "  Entry point not found: $entryPoint - skipping MCP registration"
+        }
+
+        # Profile setup (functions, aliases, etc.)
+        if ($cfg -and $cfg.profileSetup) {
+            $profileContent = Get-Content $PROFILE -Raw
+            foreach ($setup in $cfg.profileSetup) {
+                $body = $setup.body.Replace('{{entryDir}}', $comp.Dir).Replace('{{repoRoot}}', $repoRoot)
+                if (-not $profileContent -or -not $profileContent.Contains($setup.name)) {
+                    Add-Content $PROFILE "`n$body"
+                    Write-Host "  Registered $($setup.name) in profile."
+                } else {
+                    Write-Host "  $($setup.name) already in profile."
+                }
+            }
+        }
+    }
+    elseif ($comp.Type -eq "script") {
+        $dotSource = ". `"$($comp.Script)`""
+        $profileContent = Get-Content $PROFILE -Raw
+        if (-not $profileContent -or -not $profileContent.Contains($comp.Script)) {
+            Add-Content $PROFILE "`n$dotSource"
+            Write-Host "  Registered in profile ($PROFILE)."
+        } else {
+            Write-Host "  Already registered in profile."
+        }
+    }
+
+    $saved[$name] = $true
+}
+
+# --- Save state ---
+$saved | ConvertTo-Json | Set-Content $installedPath -Encoding UTF8
+Write-Host ""
+Write-Host "Install state saved to $installedPath"
 Write-Host 'Reload your shell: . "$PROFILE"'

@@ -1,8 +1,12 @@
 {
   "name": "convert-mcp",
   "version": "1.0.0",
+  "description": "Dec/hex converter MCP",
   "type": "module",
   "main": "dist/index.js",
+  "installConfig": {
+    "displayName": "Converter MCP (dec/hex)"
+  },
   "bin": {
     "convert-mcp": "dist/index.js"
   },

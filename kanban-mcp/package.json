@@ -4,6 +4,15 @@
   "description": "Kanban board MCP server with markdown-based storage",
   "type": "module",
   "main": "dist/index.js",
+  "installConfig": {
+    "displayName": "Kanban Board MCP",
+    "prerequisites": [
+      { "command": "kanbn", "install": "npm install -g @basementuniverse/kanbn --silent", "label": "kanbn CLI" }
+    ],
+    "profileSetup": [
+      { "name": "Kanban-Open", "body": "function Kanban-Open { node \"{{entryDir}}/dist/web.js\" @args }" }
+    ]
+  },
   "bin": {
     "kanban-mcp": "dist/index.js",
     "kanban-web": "dist/web.js"
