@@ -45,7 +45,7 @@ export function sanitizeCP1252(text: string): string {
 }
 
 export function slugify(text: string): string {
-  return text
+  return sanitizeCP1252(text)
     .replace(
       /([A-Z]+(.))/g,
       (_, separator: string, _letter: string, offset: number) =>
