@@ -4,6 +4,15 @@
   "description": "Kanban board MCP server with markdown-based storage",
   "type": "module",
   "main": "dist/index.js",
+  "exports": {
+    ".": "./dist/index.js",
+    "./storage": "./dist/storage.js",
+    "./operations": "./dist/operations.js",
+    "./parsers": "./dist/parsers.js",
+    "./helpers": "./dist/helpers.js",
+    "./types": "./dist/types.js",
+    "./views": "./dist/views.js"
+  },
   "installConfig": {
     "displayName": "Kanban Board MCP",
     "prerequisites": []

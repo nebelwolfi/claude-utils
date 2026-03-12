@@ -8,17 +8,19 @@ export function newRalphWorktree(state: OrchestratorState, workerId: number): st
   const worktreePath = join(state.worktreeRoot, `worker-${workerId}`);
   const branchName = `ralph/worker-${workerId}`;
 
-  // Remove stale worktree/branch
-  if (existsSync(worktreePath)) {
-    log(`Removing stale worktree for worker ${workerId}`, "WARN");
-    gitSync(state.mainRepo, "worktree", "remove", worktreePath, "--force");
+  // Remove stale worktree/branch — always attempt removal even if directory is gone
+  const removeResult = gitSync(state.mainRepo, "worktree", "remove", worktreePath, "--force");
+  if (removeResult.exitCode !== 0 && existsSync(worktreePath)) {
+    log(`Worktree remove failed, forcing directory cleanup for worker ${workerId}`, "WARN");
+    rmSync(worktreePath, { recursive: true, force: true });
   }
+  gitSync(state.mainRepo, "worktree", "prune");
   gitSync(state.mainRepo, "branch", "-D", branchName);
 
   // Create worktree
-  const { exitCode } = gitSync(state.mainRepo, "worktree", "add", worktreePath, "-b", branchName, state.baseBranch);
+  const { exitCode, stderr } = gitSync(state.mainRepo, "worktree", "add", worktreePath, "-b", branchName, state.baseBranch);
   if (exitCode !== 0 || !existsSync(worktreePath)) {
-    log(`Failed to create worktree for worker ${workerId} (branch ${state.baseBranch} may not exist)`, "ERROR");
+    log(`Failed to create worktree for worker ${workerId}: ${stderr}`, "ERROR");
     return null;
   }
 
@@ -143,14 +145,16 @@ export function newMergeWorktree(state: OrchestratorState): string | null {
   const worktreePath = join(state.worktreeRoot, "merge-worker");
   const branchName = "ralph/merge-worker";
 
-  if (existsSync(worktreePath)) {
-    gitSync(state.mainRepo, "worktree", "remove", worktreePath, "--force");
+  const removeResult = gitSync(state.mainRepo, "worktree", "remove", worktreePath, "--force");
+  if (removeResult.exitCode !== 0 && existsSync(worktreePath)) {
+    rmSync(worktreePath, { recursive: true, force: true });
   }
+  gitSync(state.mainRepo, "worktree", "prune");
   gitSync(state.mainRepo, "branch", "-D", branchName);
 
-  const { exitCode } = gitSync(state.mainRepo, "worktree", "add", worktreePath, "-b", branchName, state.baseBranch);
+  const { exitCode, stderr } = gitSync(state.mainRepo, "worktree", "add", worktreePath, "-b", branchName, state.baseBranch);
   if (exitCode !== 0 || !existsSync(worktreePath)) {
-    log("Failed to create merge worktree", "ERROR");
+    log(`Failed to create merge worktree: ${stderr}`, "ERROR");
     return null;
   }
 

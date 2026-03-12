@@ -12,36 +12,16 @@ export interface Config {
 
 export type LogLevel = "INFO" | "ERROR" | "WARN" | "OK";
 
-export interface Frontmatter {
-  [key: string]: string | number | string[] | undefined;
-}
-
-export interface Subtask {
-  text: string;
-  completed: boolean;
-}
-
-export interface Relation {
-  type: string;
-  taskId: string;
-}
+export type { Subtask, Relation } from "kanban-mcp/types";
 
 export interface TaskInfo {
   id: string;
   title: string;
-  subTasks: Subtask[];
-  relations: Relation[];
+  subTasks: { text: string; completed: boolean }[];
+  relations: { type: string; taskId: string }[];
   column: string;
   tags: string[];
   priority: string;
-}
-
-export interface BoardIndex {
-  name: string;
-  columns: string[];
-  tasksByColumn: Record<string, string[]>;
-  startedColumns: string[];
-  completedColumns: string[];
 }
 
 export interface BoardJson {

@@ -3,20 +3,21 @@ import { log } from "./logger.js";
 
 export interface ExecResult {
   stdout: string;
+  stderr: string;
   exitCode: number;
 }
 
-/** Run git with -C repoPath and return { stdout, exitCode }. Never throws. */
+/** Run git with -C repoPath and return { stdout, stderr, exitCode }. Never throws. */
 export function gitSync(repoPath: string, ...args: string[]): ExecResult {
   try {
     const stdout = execFileSync("git", ["-C", repoPath, ...args], {
       encoding: "utf-8",
       stdio: ["pipe", "pipe", "pipe"],
     }).trimEnd();
-    return { stdout, exitCode: 0 };
+    return { stdout, stderr: "", exitCode: 0 };
   } catch (err: unknown) {
-    const e = err as { stdout?: string; status?: number };
-    return { stdout: (e.stdout ?? "").trimEnd(), exitCode: e.status ?? 1 };
+    const e = err as { stdout?: string; stderr?: string; status?: number };
+    return { stdout: (e.stdout ?? "").trimEnd(), stderr: (e.stderr ?? "").trimEnd(), exitCode: e.status ?? 1 };
   }
 }
 
@@ -28,24 +29,24 @@ export function gitInDir(cwd: string, ...args: string[]): ExecResult {
       cwd,
       stdio: ["pipe", "pipe", "pipe"],
     }).trimEnd();
-    return { stdout, exitCode: 0 };
+    return { stdout, stderr: "", exitCode: 0 };
   } catch (err: unknown) {
-    const e = err as { stdout?: string; status?: number };
-    return { stdout: (e.stdout ?? "").trimEnd(), exitCode: e.status ?? 1 };
+    const e = err as { stdout?: string; stderr?: string; status?: number };
+    return { stdout: (e.stdout ?? "").trimEnd(), stderr: (e.stderr ?? "").trimEnd(), exitCode: e.status ?? 1 };
   }
 }
 
-/** Run gh CLI and return { stdout, exitCode }. Never throws. */
+/** Run gh CLI and return { stdout, stderr, exitCode }. Never throws. */
 export function ghSync(...args: string[]): ExecResult {
   try {
     const stdout = execFileSync("gh", args, {
       encoding: "utf-8",
       stdio: ["pipe", "pipe", "pipe"],
     }).trimEnd();
-    return { stdout, exitCode: 0 };
+    return { stdout, stderr: "", exitCode: 0 };
   } catch (err: unknown) {
-    const e = err as { stdout?: string; status?: number };
-    return { stdout: (e.stdout ?? "").trimEnd(), exitCode: e.status ?? 1 };
+    const e = err as { stdout?: string; stderr?: string; status?: number };
+    return { stdout: (e.stdout ?? "").trimEnd(), stderr: (e.stderr ?? "").trimEnd(), exitCode: e.status ?? 1 };
   }
 }
 
@@ -57,10 +58,10 @@ export function ghInDir(cwd: string, ...args: string[]): ExecResult {
       cwd,
       stdio: ["pipe", "pipe", "pipe"],
     }).trimEnd();
-    return { stdout, exitCode: 0 };
+    return { stdout, stderr: "", exitCode: 0 };
   } catch (err: unknown) {
-    const e = err as { stdout?: string; status?: number };
-    return { stdout: (e.stdout ?? "").trimEnd(), exitCode: e.status ?? 1 };
+    const e = err as { stdout?: string; stderr?: string; status?: number };
+    return { stdout: (e.stdout ?? "").trimEnd(), stderr: (e.stderr ?? "").trimEnd(), exitCode: e.status ?? 1 };
   }
 }
 
@@ -72,10 +73,10 @@ export function execSync(cmd: string, args: string[], options?: { cwd?: string }
       cwd: options?.cwd,
       stdio: ["pipe", "pipe", "pipe"],
     }).trimEnd();
-    return { stdout, exitCode: 0 };
+    return { stdout, stderr: "", exitCode: 0 };
   } catch (err: unknown) {
-    const e = err as { stdout?: string; status?: number };
-    return { stdout: (e.stdout ?? "").trimEnd(), exitCode: e.status ?? 1 };
+    const e = err as { stdout?: string; stderr?: string; status?: number };
+    return { stdout: (e.stdout ?? "").trimEnd(), stderr: (e.stderr ?? "").trimEnd(), exitCode: e.status ?? 1 };
   }
 }
 

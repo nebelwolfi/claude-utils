@@ -6,9 +6,9 @@ import { log } from "./logger.js";
 import { gitSync, gitInDir, commandExists, hasNonKanbnChangesInRange, getRepoRoot, detectBaseBranch, discoverSubmodules } from "./git.js";
 import {
   claimNextTask, moveKanbanTask, releaseTaskClaim, isBoardComplete,
-  repairDoneCardsWithIncompleteSubTasks, sanitizeTaskFiles,
+  repairDoneCardsWithIncompleteSubTasks,
   getTaskJson, getTaskColumn, isSubTaskComplete, allSubTasksComplete,
-  getFirstIncompleteSubTask, completeSubTaskInRepo, getBoardJson, getColumnIndex,
+  getFirstIncompleteSubTask, completeSubTaskInRepo,
 } from "./kanban.js";
 import {
   newRalphWorktree, initializeSubmodules, patchClaudeMD, configureWorktreeBuild,
@@ -88,7 +88,7 @@ export async function runMergeOnly(config: Config): Promise<void> {
   patchClaudeMD(state, mergeWorktreePath);
 
   try {
-    createPRsForDoneTasks(state);
+    await createPRsForDoneTasks(state);
     await drainPendingPRs(state, mergeWorktreePath, new Map());
     pruneMergedRalphBranches(state);
   } finally {
@@ -173,22 +173,17 @@ export async function runMain(config: Config): Promise<void> {
       log("Merge worktree creation failed, merge reviews will be skipped", "WARN");
     }
 
-    // Sanitize Unicode in task files
-    console.log();
-    log("Sanitizing task files...");
-    sanitizeTaskFiles(state.mainRepo);
-
     // Repair invalid Done cards
     console.log();
     log("Repairing Done cards with incomplete subtasks...");
-    repairDoneCardsWithIncompleteSubTasks(state.mainRepo);
+    await repairDoneCardsWithIncompleteSubTasks(state.mainRepo);
 
     // Phase 2: Initial dispatch
     console.log();
     log("Phase 2: Dispatching workers...");
 
     for (const [w, path] of worktrees) {
-      const claim = claimNextTask(state, w, worktrees);
+      const claim = await claimNextTask(state, w, worktrees);
       if (!claim) {
         log(`No tasks available for worker ${w}`, "WARN");
         continue;
@@ -249,8 +244,8 @@ export async function runMain(config: Config): Promise<void> {
       let workerColumnSnapshot: string | null = null;
 
       if (result.status === "TASK_COMPLETE") {
-        workerTaskSnapshot = getTaskJson(state.mainRepo, jobInfo.taskId);
-        workerColumnSnapshot = getTaskColumn(state.mainRepo, jobInfo.taskId);
+        workerTaskSnapshot = await getTaskJson(state.mainRepo, jobInfo.taskId);
+        workerColumnSnapshot = await getTaskColumn(state.mainRepo, jobInfo.taskId);
       }
 
       // Publish if there are non-.kanbn changes
@@ -274,30 +269,30 @@ export async function runMain(config: Config): Promise<void> {
         const workerCheckedSubTask = isSubTaskComplete(workerTaskSnapshot, claimedSubTask ?? "");
 
         if (claimedSubTask && (workerCheckedSubTask || workerMovedToDone)) {
-          if (completeSubTaskInRepo(state.mainRepo, jobInfo.taskId, claimedSubTask)) {
+          if (await completeSubTaskInRepo(state.mainRepo, jobInfo.taskId, claimedSubTask)) {
             log(`Synced completed subtask from worker: ${claimedSubTask}`, "OK");
           } else {
             log(`Failed to sync claimed subtask to main board: ${claimedSubTask}`, "WARN");
           }
         } else if (claimedSubTask) {
           // Force-mark subtask complete
-          if (completeSubTaskInRepo(state.mainRepo, jobInfo.taskId, claimedSubTask)) {
+          if (await completeSubTaskInRepo(state.mainRepo, jobInfo.taskId, claimedSubTask)) {
             log(`Force-marked subtask complete (worker had TASK_COMPLETE but didn't check it off): ${claimedSubTask}`, "WARN");
           } else {
             log(`Failed to force-mark subtask; may loop: ${claimedSubTask}`, "ERROR");
           }
         }
 
-        const mainTask = getTaskJson(state.mainRepo, jobInfo.taskId);
+        const mainTask = await getTaskJson(state.mainRepo, jobInfo.taskId);
         const allComplete = allSubTasksComplete(mainTask);
 
         if (allComplete) {
-          moveKanbanTask(state.mainRepo, jobInfo.taskId, "Done");
+          await moveKanbanTask(state.mainRepo, jobInfo.taskId, "Done");
           state.completedTasks.add(jobInfo.taskId);
           createTaskPR(state, jobInfo.taskId);
           releaseTaskClaim(state, jobInfo.taskId);
 
-          if (isBoardComplete(state.mainRepo)) {
+          if (await isBoardComplete(state.mainRepo)) {
             log("All tasks are in Done column with complete subtasks", "OK");
             boardComplete = true;
           }
@@ -317,14 +312,14 @@ export async function runMain(config: Config): Promise<void> {
           } else if (nextSub) {
             log(`Worker ${workerId} has remaining subtasks but hit iteration budget (${totalIterations} / ${maxIterations})`, "WARN");
           } else {
-            moveKanbanTask(state.mainRepo, jobInfo.taskId, "Done");
+            await moveKanbanTask(state.mainRepo, jobInfo.taskId, "Done");
             state.completedTasks.add(jobInfo.taskId);
             createTaskPR(state, jobInfo.taskId);
             releaseTaskClaim(state, jobInfo.taskId);
           }
         }
       } else if (result.status === "ERROR") {
-        moveKanbanTask(state.mainRepo, jobInfo.taskId, "Todo");
+        await moveKanbanTask(state.mainRepo, jobInfo.taskId, "Todo");
         releaseTaskClaim(state, jobInfo.taskId);
         log(`Task ${jobInfo.taskId} errored: ${result.error}`, "WARN");
       } else if (result.status !== "NO_COMMITS") {
@@ -342,13 +337,13 @@ export async function runMain(config: Config): Promise<void> {
           // Check subtask completion
           let advanced = false;
           if (claimedSubTask) {
-            const workerTask = getTaskJson(state.mainRepo, jobInfo.taskId);
+            const workerTask = await getTaskJson(state.mainRepo, jobInfo.taskId);
             if (isSubTaskComplete(workerTask, claimedSubTask)) {
-              completeSubTaskInRepo(state.mainRepo, jobInfo.taskId, claimedSubTask);
+              await completeSubTaskInRepo(state.mainRepo, jobInfo.taskId, claimedSubTask);
               log(`Synced completed subtask from worker (NO_COMMITS): ${claimedSubTask}`, "OK");
               noCommitCounts.delete(ncKey);
 
-              const mainTask = getTaskJson(state.mainRepo, jobInfo.taskId);
+              const mainTask = await getTaskJson(state.mainRepo, jobInfo.taskId);
               const nextSub = getFirstIncompleteSubTask(mainTask);
               if (nextSub) {
                 log(`Worker ${workerId} advancing to next subtask: ${nextSub}`);
@@ -363,13 +358,13 @@ export async function runMain(config: Config): Promise<void> {
                 advanced = true;
               } else {
                 log(`All subtasks complete for ${jobInfo.taskId}, moving to Done`, "OK");
-                moveKanbanTask(state.mainRepo, jobInfo.taskId, "Done");
+                await moveKanbanTask(state.mainRepo, jobInfo.taskId, "Done");
                 state.completedTasks.add(jobInfo.taskId);
                 createTaskPR(state, jobInfo.taskId);
                 releaseTaskClaim(state, jobInfo.taskId);
                 advanced = true;
 
-                if (isBoardComplete(state.mainRepo)) {
+                if (await isBoardComplete(state.mainRepo)) {
                   log("All tasks are in Done column with complete subtasks", "OK");
                   boardComplete = true;
                 }
@@ -381,7 +376,7 @@ export async function runMain(config: Config): Promise<void> {
             const ncCount = noCommitCounts.get(ncKey) ?? 0;
             if (ncCount >= 5) {
               log(`Worker ${workerId}: ${ncCount} NO_COMMITS on ${ncKey}, giving up`, "WARN");
-              moveKanbanTask(state.mainRepo, jobInfo.taskId, "Todo");
+              await moveKanbanTask(state.mainRepo, jobInfo.taskId, "Todo");
               releaseTaskClaim(state, jobInfo.taskId);
               noCommitCounts.delete(ncKey);
             } else {
@@ -425,7 +420,7 @@ export async function runMain(config: Config): Promise<void> {
 
         // Claim next task
         if (!dispatched) {
-          const nextClaim = claimNextTask(state, workerId, worktrees);
+          const nextClaim = await claimNextTask(state, workerId, worktrees);
           if (nextClaim && workerPath) {
             switchWorktreeToTaskBranch(workerPath, nextClaim.taskId, state.baseBranch);
             syncKanbnToWorktree(state.mainRepo, workerPath);
@@ -512,7 +507,7 @@ export async function runMain(config: Config): Promise<void> {
 
     // Move uncompleted claimed tasks back
     for (const [taskId] of state.claimedTasks) {
-      moveKanbanTask(state.mainRepo, taskId, "In Progress");
+      await moveKanbanTask(state.mainRepo, taskId, "In Progress");
       releaseTaskClaim(state, taskId);
     }
 
@@ -550,7 +545,7 @@ export async function runMain(config: Config): Promise<void> {
     }
 
     // Create PRs for Done tasks
-    createPRsForDoneTasks(state);
+    await createPRsForDoneTasks(state);
 
     // Prune stale worktree refs
     gitSync(state.mainRepo, "worktree", "prune");

@@ -1,289 +1,101 @@
-import { readFileSync, writeFileSync, readdirSync, existsSync } from "node:fs";
-import { join } from "node:path";
-import type { Frontmatter, Subtask, Relation, TaskInfo, BoardIndex, BoardJson, ClaimResult, OrchestratorState } from "./types.js";
+import type { Task } from "kanban-mcp/types";
+import { readTask, writeTask, readIndex, getAllTasksWithColumns } from "kanban-mcp/storage";
+import { moveTask } from "kanban-mcp/operations";
+import type { TaskInfo, BoardJson, ClaimResult, OrchestratorState } from "./types.js";
 import { log } from "./logger.js";
-import { ghSync } from "./git.js";
+import { ghSync, gitSync } from "./git.js";
 
-// ── Frontmatter parsing ────────────────────────────────────────────────
+// ── Env helper ───────────────────────────────────────────────────────────
 
-export function parseFrontmatter(content: string): { frontmatter: Frontmatter; body: string } {
-  const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/);
-  if (!match) return { frontmatter: {}, body: content.trim() };
-
-  const lines = match[1].split("\n");
-  const fm: Frontmatter = {};
-  let i = 0;
-
-  while (i < lines.length) {
-    const line = lines[i].trimEnd();
-    if (!line) { i++; continue; }
-
-    const colonIdx = line.indexOf(":");
-    if (colonIdx === -1) { i++; continue; }
-
-    const key = line.slice(0, colonIdx).trim();
-    const rest = line.slice(colonIdx + 1).trim();
-
-    if (rest === "" && i + 1 < lines.length && /^\s+-/.test(lines[i + 1])) {
-      const arr: string[] = [];
-      i++;
-      while (i < lines.length && /^\s+-/.test(lines[i])) {
-        arr.push(lines[i].replace(/^\s+-\s*/, "").trim().replace(/^['"]|['"]$/g, ""));
-        i++;
-      }
-      fm[key] = arr;
-      continue;
-    }
-
-    const arrMatch = rest.match(/^\[(.*)\]$/);
-    if (arrMatch) {
-      fm[key] = arrMatch[1]
-        ? arrMatch[1].split(",").map((s) => s.trim().replace(/^['"]|['"]$/g, "")).filter(Boolean)
-        : [];
-    } else {
-      fm[key] = rest.replace(/^['"]|['"]$/g, "");
-    }
-    i++;
+async function withRoot<T>(repoPath: string, fn: () => Promise<T>): Promise<T> {
+  const prev = process.env.KANBAN_ROOT;
+  process.env.KANBAN_ROOT = repoPath;
+  try {
+    return await fn();
+  } finally {
+    if (prev === undefined) delete process.env.KANBAN_ROOT;
+    else process.env.KANBAN_ROOT = prev;
   }
-
-  return { frontmatter: fm, body: match[2].trim() };
 }
 
-// ── Task reading ────────────────────────────────────────────────────────
+// ── Type conversion ──────────────────────────────────────────────────────
 
-export function readTaskDirect(repoPath: string, taskId: string, column = ""): TaskInfo | null {
-  const taskPath = join(repoPath, ".kanbn", "tasks", `${taskId}.md`);
-  if (!existsSync(taskPath)) return null;
-
-  let raw: string;
-  try { raw = readFileSync(taskPath, "utf-8"); } catch { return null; }
-
-  const { frontmatter: fm, body } = parseFrontmatter(raw);
-
-  let title = taskId;
-  const titleMatch = body.match(/(?:^|\n)# (.+)$/m);
-  if (titleMatch) title = titleMatch[1].trim();
-
-  const stripped = body.replace(/\n---\r?\n[\s\S]*?\r?\n---/g, "").replace(/(?:^|\n)# .+\n*/g, "").trim();
-
-  // Parse relations
-  const relations: Relation[] = [];
-  const relMatch = stripped.match(/(## Relations\r?\n)([\s\S]*?)(?=\n## |\s*$)/);
-  if (relMatch) {
-    for (const line of relMatch[2].split("\n")) {
-      const linkM = line.match(/^- \[([^\]]+)\]\([^)]+\)$/);
-      const bracketM = !linkM ? line.match(/^- \[([^\]]+)\]$/) : null;
-      const text = linkM ? linkM[1].trim() : bracketM ? bracketM[1].trim() : null;
-      if (!text) continue;
-      const parts = text.split(/\s+/, 2);
-      if (parts.length > 1) {
-        relations.push({ type: parts[0], taskId: parts[1] });
-      } else {
-        relations.push({ type: "", taskId: parts[0] });
-      }
-    }
-  }
-
-  // Parse subtasks
-  const subTasks: Subtask[] = [];
-  const subMatch = stripped.match(/(## Sub-tasks\r?\n)([\s\S]*?)(?=\n## |\s*$)/);
-  if (subMatch) {
-    for (const line of subMatch[2].split("\n")) {
-      const m = line.match(/^- \[([ xX])\] (.+)$/);
-      if (m) subTasks.push({ text: m[2].trim(), completed: m[1] !== " " });
-    }
-  }
-
-  // Tags
-  let tags: string[] = [];
-  if (fm.tags) {
-    tags = Array.isArray(fm.tags) ? fm.tags as string[] : [fm.tags as string];
-  }
-
-  const priority = (fm.priority as string) ?? "medium";
-
-  return { id: taskId, title, subTasks, relations, column, tags, priority };
+function taskToInfo(task: Task, column = ""): TaskInfo {
+  return {
+    id: task.id,
+    title: task.title,
+    subTasks: (task.subtasks ?? []).map((s) => ({ text: s.text, completed: s.completed })),
+    relations: (task.relations ?? []).map((r) => ({ type: r.type, taskId: r.taskId })),
+    column,
+    tags: task.tags ?? [],
+    priority: task.priority ?? "medium",
+  };
 }
 
-// ── Index read/write ────────────────────────────────────────────────────
+// ── Task reading ─────────────────────────────────────────────────────────
 
-export function readKanbanIndex(repoPath: string): BoardIndex | null {
-  const indexPath = join(repoPath, ".kanbn", "index.md");
-  if (!existsSync(indexPath)) return null;
-
-  let raw: string;
-  try { raw = readFileSync(indexPath, "utf-8"); } catch { return null; }
-
-  const { frontmatter: fm, body } = parseFrontmatter(raw);
-
-  let name = "";
-  const nameMatch = body.match(/(?:^|\n)# (.+)$/m);
-  if (nameMatch) name = nameMatch[1].trim();
-
-  const startedColumns = Array.isArray(fm.startedColumns) ? fm.startedColumns as string[] : ["In Progress"];
-  const completedColumns = Array.isArray(fm.completedColumns) ? fm.completedColumns as string[] : ["Done"];
-
-  const columns: string[] = [];
-  const tasksByColumn: Record<string, string[]> = {};
-
-  const h2Regex = /^## (.+)$/gm;
-  const h2Positions: { name: string; start: number; end: number }[] = [];
-  let m: RegExpExecArray | null;
-
-  while ((m = h2Regex.exec(body)) !== null) {
-    h2Positions.push({ name: m[1].trim(), start: m.index, end: m.index + m[0].length });
-  }
-
-  for (let i = 0; i < h2Positions.length; i++) {
-    const colName = h2Positions[i].name;
-    columns.push(colName);
-    tasksByColumn[colName] = [];
-
-    const section = body.slice(
-      h2Positions[i].end,
-      i + 1 < h2Positions.length ? h2Positions[i + 1].start : body.length,
-    );
-
-    const linkRegex = /^- \[([^\]]+)\]\(tasks\/[^)]+\.md\)/gm;
-    let lm: RegExpExecArray | null;
-    while ((lm = linkRegex.exec(section)) !== null) {
-      tasksByColumn[colName].push(lm[1].trim());
-    }
-  }
-
-  return { name, columns, tasksByColumn, startedColumns, completedColumns };
-}
-
-export function writeKanbanIndex(repoPath: string, index: BoardIndex): void {
-  const indexPath = join(repoPath, ".kanbn", "index.md");
-  let fmStr = "";
-
-  if (index.startedColumns.length > 0) {
-    fmStr += "startedColumns:\n";
-    for (const sc of index.startedColumns) fmStr += `  - '${sc}'\n`;
-  }
-  if (index.completedColumns.length > 0) {
-    fmStr += "completedColumns:\n";
-    for (const cc of index.completedColumns) fmStr += `  - '${cc}'\n`;
-  }
-
-  let content = `---\n${fmStr}---\n\n# ${index.name}\n`;
-  for (const col of index.columns) {
-    const tasks = index.tasksByColumn[col] ?? [];
-    content += `\n## ${col}\n`;
-    if (tasks.length > 0) {
-      content += "\n";
-      for (const tid of tasks) content += `- [${tid}](tasks/${tid}.md)\n`;
-    }
-  }
-
-  writeFileSync(indexPath, content, "utf-8");
-}
-
-// ── Task operations ────────────────────────────────────────────────────
-
-export function moveKanbanTask(repoPath: string, taskId: string, column: string): boolean {
-  const index = readKanbanIndex(repoPath);
-  if (!index) return false;
-  if (!index.columns.includes(column)) return false;
-
-  // Remove from all columns
-  for (const col of index.columns) {
-    index.tasksByColumn[col] = (index.tasksByColumn[col] ?? []).filter((t) => t !== taskId);
-  }
-  // Add to target column
-  (index.tasksByColumn[column] ??= []).push(taskId);
-  writeKanbanIndex(repoPath, index);
-
-  // Update task frontmatter timestamps
-  const taskPath = join(repoPath, ".kanbn", "tasks", `${taskId}.md`);
-  if (existsSync(taskPath)) {
+export async function getTaskJson(repoPath: string, taskId: string): Promise<TaskInfo | null> {
+  if (!taskId) return null;
+  return withRoot(repoPath, async () => {
     try {
-      let taskRaw = readFileSync(taskPath, "utf-8");
-      const fmMatch = taskRaw.match(/^---\r?\n([\s\S]*?)\r?\n---/);
-      if (fmMatch) {
-        let fmBlock = fmMatch[1];
-        const now = new Date().toISOString();
-
-        if (/^updated:/m.test(fmBlock)) {
-          fmBlock = fmBlock.replace(/^updated:.*$/m, `updated: ${now}`);
-        } else {
-          fmBlock += `\nupdated: ${now}`;
-        }
-
-        if (index.startedColumns.includes(column) && !/^started:/m.test(fmBlock)) {
-          fmBlock += `\nstarted: ${now}`;
-        }
-        if (index.completedColumns.includes(column) && !/^completed:/m.test(fmBlock)) {
-          fmBlock += `\ncompleted: ${now}`;
-        }
-
-        if (fmBlock !== fmMatch[1]) {
-          taskRaw = taskRaw.slice(0, fmMatch.index!) + `---\n${fmBlock}\n---` + taskRaw.slice(fmMatch.index! + fmMatch[0].length);
-          writeFileSync(taskPath, taskRaw, "utf-8");
-        }
-      }
-    } catch { /* best effort */ }
-  }
-
-  return true;
+      const { tasks } = await getAllTasksWithColumns();
+      const found = tasks.find((t) => t.id === taskId);
+      if (found) return taskToInfo(found, found.column);
+      // Fallback: try reading directly
+      const task = await readTask(taskId);
+      return taskToInfo(task);
+    } catch {
+      return null;
+    }
+  });
 }
 
-export function completeSubTaskInRepo(repoPath: string, taskId: string, subTaskText: string): boolean {
-  if (!subTaskText) return false;
-  const taskFile = join(repoPath, ".kanbn", "tasks", `${taskId}.md`);
-  if (!existsSync(taskFile)) return false;
-
-  const content = readFileSync(taskFile, "utf-8");
-  const escaped = subTaskText.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const pattern = new RegExp(`^(\\s*[-*]\\s*)\\[ \\](\\s+${escaped}\\s*$)`, "m");
-  const newContent = content.replace(pattern, "$1[x]$2");
-
-  if (newContent === content) {
-    // Check if already complete
-    const alreadyDone = new RegExp(`^\\s*[-*]\\s*\\[x\\]\\s+${escaped}\\s*$`, "m");
-    return alreadyDone.test(content);
-  }
-
-  writeFileSync(taskFile, newContent, "utf-8");
-  return true;
+export async function getTaskColumn(repoPath: string, taskId: string): Promise<string | null> {
+  return withRoot(repoPath, async () => {
+    try {
+      const index = await readIndex();
+      for (const col of index.columns) {
+        if ((index.tasksByColumn[col] ?? []).includes(taskId)) return col;
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  });
 }
 
 // ── Board helpers ────────────────────────────────────────────────────────
 
-export function getBoardJson(repoPath: string): BoardJson | null {
-  const index = readKanbanIndex(repoPath);
-  if (!index) return null;
+export async function getBoardJson(repoPath: string): Promise<BoardJson | null> {
+  return withRoot(repoPath, async () => {
+    try {
+      const { tasks, index } = await getAllTasksWithColumns();
+      const byColumn = new Map<string, TaskInfo[]>();
+      for (const col of index.columns) byColumn.set(col, []);
 
-  const headings: { name: string }[] = [];
-  const colArrays: TaskInfo[][] = [];
-
-  for (const colName of index.columns) {
-    headings.push({ name: colName });
-    const taskObjs: TaskInfo[] = [];
-
-    for (const tid of index.tasksByColumn[colName] ?? []) {
-      const taskObj = readTaskDirect(repoPath, tid, colName);
-      if (taskObj) {
-        taskObjs.push(taskObj);
-      } else {
-        taskObjs.push({ id: tid, title: tid, column: colName, subTasks: [], relations: [], tags: [], priority: "medium" });
+      for (const t of tasks) {
+        const col = t.column ?? "";
+        const arr = byColumn.get(col);
+        if (arr) arr.push(taskToInfo(t, col));
       }
-    }
-    colArrays.push(taskObjs);
-  }
 
-  return {
-    headings,
-    lanes: [{ columns: colArrays }],
-    startedColumns: index.startedColumns,
-    completedColumns: index.completedColumns,
-  };
+      return {
+        headings: index.columns.map((name) => ({ name })),
+        lanes: [{ columns: index.columns.map((col) => byColumn.get(col) ?? []) }],
+        startedColumns: index.startedColumns,
+        completedColumns: index.completedColumns,
+      };
+    } catch {
+      return null;
+    }
+  });
 }
 
 export function getColumnIndex(board: BoardJson, columnName: string): number {
   return board.headings.findIndex((h) => h.name.toLowerCase() === columnName.toLowerCase());
 }
+
+// ── Subtask helpers (pure, operate on TaskInfo) ──────────────────────────
 
 export function getFirstIncompleteSubTask(task: TaskInfo | null): string | null {
   if (!task?.subTasks) return null;
@@ -302,44 +114,43 @@ export function isSubTaskComplete(task: TaskInfo | null, subTaskText: string): b
   return st ? st.completed : false;
 }
 
-export function getTaskColumn(repoPath: string, taskId: string): string | null {
-  const board = getBoardJson(repoPath);
-  if (!board) return null;
+// ── Task operations ──────────────────────────────────────────────────────
 
-  for (const lane of board.lanes) {
-    for (let c = 0; c < lane.columns.length; c++) {
-      for (const task of lane.columns[c]) {
-        if (task.id === taskId) {
-          return task.column || board.headings[c]?.name || null;
-        }
-      }
+export async function moveKanbanTask(repoPath: string, taskId: string, column: string): Promise<boolean> {
+  return withRoot(repoPath, async () => {
+    try {
+      await moveTask(taskId, column);
+      return true;
+    } catch {
+      return false;
     }
-  }
-  return null;
+  });
 }
 
-export function getTaskJson(repoPath: string, taskId: string): TaskInfo | null {
-  if (!taskId) return null;
-  const task = readTaskDirect(repoPath, taskId);
-  if (task) return task;
-
-  const board = getBoardJson(repoPath);
-  if (!board) return null;
-
-  for (const lane of board.lanes) {
-    for (const col of lane.columns) {
-      for (const t of col) {
-        if (t.id === taskId) return t;
+export async function completeSubTaskInRepo(repoPath: string, taskId: string, subTaskText: string): Promise<boolean> {
+  if (!subTaskText) return false;
+  return withRoot(repoPath, async () => {
+    try {
+      const task = await readTask(taskId);
+      const idx = task.subtasks.findIndex((s) => s.text === subTaskText);
+      if (idx === -1) {
+        // Check if already complete
+        return task.subtasks.some((s) => s.text === subTaskText && s.completed);
       }
+      if (task.subtasks[idx].completed) return true;
+      task.subtasks[idx].completed = true;
+      await writeTask(task);
+      return true;
+    } catch {
+      return false;
     }
-  }
-  return null;
+  });
 }
 
 // ── Board state checks ──────────────────────────────────────────────────
 
-export function isBoardComplete(repoPath: string): boolean {
-  const board = getBoardJson(repoPath);
+export async function isBoardComplete(repoPath: string): Promise<boolean> {
+  const board = await getBoardJson(repoPath);
   if (!board) return false;
 
   const doneIndex = getColumnIndex(board, "Done");
@@ -358,8 +169,8 @@ export function isBoardComplete(repoPath: string): boolean {
   return true;
 }
 
-export function repairDoneCardsWithIncompleteSubTasks(repoPath: string): void {
-  const board = getBoardJson(repoPath);
+export async function repairDoneCardsWithIncompleteSubTasks(repoPath: string): Promise<void> {
+  const board = await getBoardJson(repoPath);
   if (!board) return;
 
   const doneIndex = getColumnIndex(board, "Done");
@@ -375,7 +186,7 @@ export function repairDoneCardsWithIncompleteSubTasks(repoPath: string): void {
       seen.add(task.id);
 
       if (!allSubTasksComplete(task)) {
-        moveKanbanTask(repoPath, task.id, "In Progress");
+        await moveKanbanTask(repoPath, task.id, "In Progress");
         log(`Moved ${task.id} from Done to In Progress (incomplete subtasks)`, "WARN");
         repaired++;
       }
@@ -384,34 +195,6 @@ export function repairDoneCardsWithIncompleteSubTasks(repoPath: string): void {
 
   if (repaired > 0) {
     log(`Repaired ${repaired} Done task(s) with incomplete subtasks`, "WARN");
-  }
-}
-
-// ── Unicode sanitization ────────────────────────────────────────────────
-
-export function sanitizeTaskFiles(repoPath: string): void {
-  const taskDir = join(repoPath, ".kanbn", "tasks");
-  if (!existsSync(taskDir)) return;
-
-  for (const entry of readdirSync(taskDir)) {
-    if (!entry.endsWith(".md")) continue;
-    const filePath = join(taskDir, entry);
-    const content = readFileSync(filePath, "utf-8");
-    let result = content;
-
-    result = result.replace(/\u2014/g, "-");   // em-dash
-    result = result.replace(/\u2013/g, "-");   // en-dash
-    result = result.replace(/\u2018/g, "'");   // left single quote
-    result = result.replace(/\u2019/g, "'");   // right single quote
-    result = result.replace(/\u201C/g, '"');   // left double quote
-    result = result.replace(/\u201D/g, '"');   // right double quote
-    result = result.replace(/ÔÇö/g, "-");      // corrupted em-dash
-    result = result.replace(/ÔÇô/g, "-");      // corrupted en-dash
-
-    if (result !== content) {
-      writeFileSync(filePath, result, "utf-8");
-      log(`Sanitized Unicode in task file: ${entry}`);
-    }
   }
 }
 
@@ -466,7 +249,6 @@ export function getCheckedOutTaskBranches(
   excludeWorkerId: number,
   worktrees: Map<number, string>,
 ): Map<string, number> {
-  const { gitSync } = require("./git.js") as typeof import("./git.js");
   const checkedOut = new Map<string, number>();
 
   for (const [wid, path] of worktrees) {
@@ -479,21 +261,14 @@ export function getCheckedOutTaskBranches(
   return checkedOut;
 }
 
-export function claimNextTask(
+export async function claimNextTask(
   state: OrchestratorState,
   workerId: number,
   worktrees: Map<number, string>,
-): ClaimResult | null {
-  const { gitSync: gitSyncFn } = require("./git.js") as typeof import("./git.js");
-
-  const board = getBoardJson(state.mainRepo);
+): Promise<ClaimResult | null> {
+  const board = await getBoardJson(state.mainRepo);
   if (!board) {
-    const indexPath = join(state.mainRepo, ".kanbn", "index.md");
-    if (!existsSync(indexPath)) {
-      log(`No kanbn board found at ${indexPath}`, "ERROR");
-    } else {
-      log(`Failed to parse kanbn board at ${indexPath}`, "ERROR");
-    }
+    log(`Failed to read kanban board`, "ERROR");
     return null;
   }
 
@@ -501,7 +276,7 @@ export function claimNextTask(
   const checkedOutBranches = new Map<string, number>();
   for (const [wid, path] of worktrees) {
     if (wid === workerId) continue;
-    const { stdout } = gitSyncFn(path, "rev-parse", "--abbrev-ref", "HEAD");
+    const { stdout } = gitSync(path, "rev-parse", "--abbrev-ref", "HEAD");
     const branchMatch = stdout.match(/^ralph\/(.+)$/);
     if (branchMatch) checkedOutBranches.set(branchMatch[1], wid);
   }
@@ -605,7 +380,7 @@ export function claimNextTask(
       if (doneTasks.has(curId) || state.claimedTasks.has(curId) || state.completedTasks.has(curId) || checkedOutBranches.has(curId)) continue;
 
       const existing = candidates.find((c) => c.taskId === curId);
-      const curObj = existing?.taskObj ?? getTaskJson(state.mainRepo, curId);
+      const curObj = existing?.taskObj ?? await getTaskJson(state.mainRepo, curId);
       if (!curObj) continue;
 
       const curBlockers = getBlockerTaskIds(curObj, curId, doneTasks, prTasks, reverseBlockedBy);
@@ -642,7 +417,7 @@ export function claimNextTask(
   const taskObj = chosen.taskObj;
   const claimedSubTask = getFirstIncompleteSubTask(taskObj);
 
-  moveKanbanTask(state.mainRepo, taskId, "In Progress");
+  await moveKanbanTask(state.mainRepo, taskId, "In Progress");
 
   state.claimedTasks.set(taskId, workerId);
   if (claimedSubTask) {

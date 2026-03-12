@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { log } from "./logger.js";
 import { gitSync, gitInDir, ghSync, ghInDir, hasNonKanbnChangesInRange, isKanbnPath, hasConflictMarkers } from "./git.js";
 import { spawnMergeReviewWorker } from "./worker.js";
+import { getBoardJson, getColumnIndex } from "./kanban.js";
 import type { OrchestratorState, PullRequest, WorkerResult } from "./types.js";
 
 /** Push worker results to remote. Returns true on success. */
@@ -115,10 +116,8 @@ export function createTaskPR(state: OrchestratorState, taskId: string): void {
 }
 
 /** Create PRs for all tasks in the Done column that have remote branches. */
-export function createPRsForDoneTasks(state: OrchestratorState): void {
-  const { getBoardJson, getColumnIndex } = require("./kanban.js") as typeof import("./kanban.js");
-
-  const board = getBoardJson(state.mainRepo);
+export async function createPRsForDoneTasks(state: OrchestratorState): Promise<void> {
+  const board = await getBoardJson(state.mainRepo);
   if (!board) {
     log("Cannot read board for Done-task PR sweep", "WARN");
     return;
