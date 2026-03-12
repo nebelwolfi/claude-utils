@@ -1661,7 +1661,7 @@ function Start-MergeReviewWorker {
         Add-Content $LogFile "[$timestamp] Worker $WorkerId - Reviewing PR #$PRNumber"
 
         try {
-            $result = $Prompt | claude --permission-mode bypassPermissions -p 2>&1
+            $result = $Prompt | claude --model claude-opus-4-6 --effort max --permission-mode bypassPermissions -p 2>&1
             $exitCode = $LASTEXITCODE
             $resultText = $result -join "`n"
 
@@ -1846,7 +1846,7 @@ function Start-Worker {
         $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
         Add-Content $LogFile "[$timestamp] Worker $WorkerId - Running task $TaskId"
 
-        $result = $Prompt | claude --permission-mode bypassPermissions -p 2>&1
+        $result = $Prompt | claude --model claude-opus-4-6 --effort max --permission-mode bypassPermissions -p 2>&1
         $exitCode = $LASTEXITCODE
         $resultText = $result -join "`n"
 
