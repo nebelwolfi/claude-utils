@@ -1853,8 +1853,11 @@ function Start-Worker {
         if ($exitCode -ne 0) {
             $iterLog = "$LogFile.iter-$(Get-Date -Format 'yyyyMMdd-HHmmss').txt"
             Set-Content $iterLog $resultText
-            Add-Content $LogFile "[$timestamp] Worker $WorkerId - ERROR: exit code $exitCode (saved to $iterLog)"
-            return @{ Status = "ERROR"; WorkerId = $WorkerId; TaskId = $TaskId; Error = "claude exited with code $exitCode" }
+            $lastLines = ($resultText -split "`n" | Select-Object -Last 5) -join " | "
+            if ($lastLines.Length -gt 300) { $lastLines = $lastLines.Substring(0, 300) + "..." }
+            $errorSummary = "exit code $exitCode - $lastLines"
+            Add-Content $LogFile "[$timestamp] Worker $WorkerId - ERROR: $errorSummary (saved to $iterLog)"
+            return @{ Status = "ERROR"; WorkerId = $WorkerId; TaskId = $TaskId; Error = $errorSummary }
         }
 
         # Save full Claude output to per-iteration log file
@@ -2103,7 +2106,8 @@ try {
                 Remove-Job $job -Force
 
                 $status = if ($result.Status) { $result.Status } else { "UNKNOWN" }
-                Write-Log "Worker $workerId finished: $status (task: $($jobInfo.TaskId))"
+                $errorDetail = if ($result.Error) { " - $($result.Error)" } else { "" }
+                Write-Log "Worker $workerId finished: $status (task: $($jobInfo.TaskId))$errorDetail"
 
                 # Task completion - publish + kanbn handling
                 $claimedSubTask = if ($jobInfo.ContainsKey("ClaimedSubTask")) { $jobInfo.ClaimedSubTask } else { $null }
@@ -2200,7 +2204,7 @@ try {
                 elseif ($status -eq "ERROR") {
                     Move-KanbanTask -RepoPath $MAIN_REPO -TaskId $jobInfo.TaskId -Column "Todo" | Out-Null
                     Release-TaskClaim -TaskId $jobInfo.TaskId
-                    Write-Log "Task $($jobInfo.TaskId) errored" "WARN"
+                    Write-Log "Task $($jobInfo.TaskId) errored: $($result.Error)" "WARN"
                 } elseif ($status -ne "NO_COMMITS") {
                     Release-TaskClaim -TaskId $jobInfo.TaskId
                 }
@@ -2415,7 +2419,8 @@ try {
                         $result = Receive-Job $job -ErrorAction SilentlyContinue
                         Remove-Job $job -Force
                         $status = if ($result.Status) { $result.Status } else { "UNKNOWN" }
-                        Write-Log "Worker $workerId finished (drain): $status (task: $($jobInfo.TaskId))"
+                        $errorDetail = if ($result.Error) { " - $($result.Error)" } else { "" }
+                        Write-Log "Worker $workerId finished (drain): $status (task: $($jobInfo.TaskId))$errorDetail"
 
                         # Publish any work from this worker
                         $taskBranch = "ralph/$($jobInfo.TaskId)"
