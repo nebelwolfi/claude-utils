@@ -44,6 +44,10 @@ server.tool("task_edit", "Edit an existing task's fields", {
   tags:        z.array(z.string()).optional().describe("New tags (replaces existing)"),
 }, wrap(async (p) => {
   const { id, ...updates } = p as { id: string } & Record<string, unknown>;
+  if (typeof updates.description === "string" && /## Sub-tasks?\b/i.test(updates.description))
+    throw new Error("Description contains subtask data. Use the task_subtask tool to manage subtasks, not the description field.");
+  if (typeof updates.description === "string" && /## Relations?\b/i.test(updates.description))
+    throw new Error("Description contains relation data. Use the task_relation tool to manage relations, not the description field.");
   const t = await editTask(id, updates as Parameters<typeof editTask>[1]);
   return `Updated task "${t.title}" (${t.id})`;
 }));
@@ -66,27 +70,20 @@ server.tool("task_view", "View a single task's full details including subtasks",
   if (t.started)   out += `- **Started:** ${t.started}\n`;
   if (t.completed) out += `- **Completed:** ${t.completed}\n`;
   if (t.subtasks?.length) {
-    const done = t.subtasks.filter((s) => s.completed).length;
-    out += `- **Subtasks:** ${done}/${t.subtasks.length} complete\n`;
-  }
-  if (t.relations?.length) {
-    out += `- **Relations:** ${t.relations.length}\n`;
-  }
-  if (t.description) out += `\n---\n\n${t.description}`;
-  if (t.subtasks?.length) {
-    out += `\n\n## Sub-tasks\n\n`;
+    out += `- **Subtasks:**\n`;
     for (let i = 0; i < t.subtasks.length; i++) {
       const s = t.subtasks[i];
-      out += `${i}. [${s.completed ? "x" : " "}] ${s.text}\n`;
+      out += `  - [${s.completed ? "x" : " "}] ${i}. ${s.text}\n`;
     }
   }
   if (t.relations?.length) {
-    out += `\n\n## Relations\n\n`;
+    out += `- **Relations:**\n`;
     for (let i = 0; i < t.relations.length; i++) {
       const r = t.relations[i];
-      out += `${i}. **${r.type}** → ${r.taskId}\n`;
+      out += `  - ${i}. **${r.type}** → ${r.taskId}\n`;
     }
   }
+  if (t.description) out += `\n---\n\n${t.description}`;
   return out;
 }));
 

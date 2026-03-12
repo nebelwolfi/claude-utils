@@ -371,12 +371,12 @@ export async function claimNextTask(
   }
   for (const c of candidates) c.isBlocker = isBlockingOthers.has(c.taskId);
 
-  // Sort: unblocked first, blockers first, priority first, earlier column first
+  // Sort: earlier column first (in-progress before todo/backlog), unblocked first, blockers first, priority first
   candidates.sort((a, b) => {
+    if (a.columnRank !== b.columnRank) return a.columnRank - b.columnRank;
     if (a.isBlocked !== b.isBlocked) return a.isBlocked ? 1 : -1;
     if (a.isBlocker !== b.isBlocker) return a.isBlocker ? -1 : 1;
-    if (a.hasPriority !== b.hasPriority) return a.hasPriority ? -1 : 1;
-    return a.columnRank - b.columnRank;
+    return a.hasPriority ? -1 : b.hasPriority ? 1 : 0;
   });
 
   let chosen = candidates[0];
