@@ -483,7 +483,8 @@ export async function runMain(config: Config): Promise<void> {
         const { workerId, result } = settled;
         const jobInfo = activeJobs.get(workerId)!;
         activeJobs.delete(workerId);
-        log(`Worker ${workerId} finished (drain): ${result.status} (task: ${jobInfo.taskId})`);
+        const displayStatus = (shutdownRequested && result.status === "ERROR") ? "CANCELLED" : result.status;
+        log(`Worker ${workerId} finished (drain): ${displayStatus} (task: ${jobInfo.taskId})`);
 
         // Publish any remaining work
         const wp = worktrees.get(workerId);

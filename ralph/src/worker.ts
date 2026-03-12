@@ -132,6 +132,8 @@ export function spawnWorker(
     cwd: worktreePath,
     stdio: ["pipe", "pipe", "pipe"],
     shell: true,
+    detached: true,
+    windowsHide: true,
     env: { ...process.env },
   });
 
@@ -209,6 +211,8 @@ export function spawnMergeReviewWorker(
     cwd: worktreePath,
     stdio: ["pipe", "pipe", "pipe"],
     shell: true,
+    detached: true,
+    windowsHide: true,
   });
 
   child.stdin!.write(prompt);
