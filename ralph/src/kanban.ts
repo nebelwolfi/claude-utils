@@ -488,7 +488,12 @@ export function claimNextTask(
 
   const board = getBoardJson(state.mainRepo);
   if (!board) {
-    log("Failed to read kanbn board", "ERROR");
+    const indexPath = join(state.mainRepo, ".kanbn", "index.md");
+    if (!existsSync(indexPath)) {
+      log(`No kanbn board found at ${indexPath}`, "ERROR");
+    } else {
+      log(`Failed to parse kanbn board at ${indexPath}`, "ERROR");
+    }
     return null;
   }
 
