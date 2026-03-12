@@ -2178,7 +2178,7 @@ try {
                     } else {
                         # Stay on same task — advance to next subtask
                         $nextSub = Get-FirstIncompleteSubTask -Task $mainTask
-                        if ($nextSub) {
+                        if ($nextSub -and $totalIterations -lt $maxIterations) {
                             $script:claimedSubTasks[$jobInfo.TaskId] = $nextSub
                             Write-Log "Worker $workerId advancing to next subtask: $nextSub"
                             Sync-KanbnToWorktree -WorktreePath $worktrees[$workerId]
@@ -2187,6 +2187,8 @@ try {
                                 -TaskId $jobInfo.TaskId -ClaimedSubTask $nextSub -LogFile $logFile -BaseBranchName $BaseBranch
                             $activeJobs[$workerId] = @{ Job = $newJob; TaskId = $jobInfo.TaskId; ClaimedSubTask = $nextSub }
                             continue
+                        } elseif ($nextSub) {
+                            Write-Log "Worker $workerId has remaining subtasks but hit iteration budget ($totalIterations / $maxIterations)" "WARN"
                         } else {
                             Move-KanbanTask -RepoPath $MAIN_REPO -TaskId $jobInfo.TaskId -Column "Done" | Out-Null
                             $script:completedTasks[$jobInfo.TaskId] = $true
