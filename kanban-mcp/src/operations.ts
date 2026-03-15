@@ -106,10 +106,16 @@ export async function findTasks(params: FindTasksParams): Promise<(Task & { colu
     if (params.tag      && !task.tags.includes(params.tag))   return false;
     if (params.priority && task.priority !== params.priority) return false;
     if (params.query) {
-      const q = params.query.toLowerCase();
-      if (!task.title.toLowerCase().includes(q) &&
-          !(task.description ?? "").toLowerCase().includes(q) &&
-          !task.tags.some((t) => t.toLowerCase().includes(q))) return false;
+      const keywords = params.query.toLowerCase().split(/\s+/).filter(Boolean);
+      const searchable = [
+        task.id,
+        task.title,
+        task.description ?? "",
+        ...task.tags,
+        ...task.subtasks.map((s) => s.text),
+        ...task.relations.map((r) => r.taskId),
+      ].map((s) => s.toLowerCase()).join(" ");
+      if (!keywords.every((kw) => searchable.includes(kw))) return false;
     }
     return true;
   });
