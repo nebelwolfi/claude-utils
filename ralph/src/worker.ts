@@ -13,6 +13,12 @@ try {
   resolvedClaudePath = result.split(/\r?\n/)[0];
 } catch { /* fallback to bare "claude" */ }
 
+let claudeModel = "claude-opus-4-6";
+
+export function setModel(model: string): void {
+  claudeModel = model;
+}
+
 let resolvedDockerPath = "docker";
 try {
   const result = execFileSync("where", ["docker"], { encoding: "utf-8" }).trim();
@@ -193,7 +199,7 @@ export function spawnWorker(
   appendFileSync(logFile, `[${timestamp()}] Worker ${workerId} - Running task ${taskId}\n`);
 
   const claudeArgs = [
-    "--model", "claude-opus-4-6",
+    "--model", claudeModel,
     "--effort", "high",
     "--permission-mode", "bypassPermissions",
     "-p",
@@ -262,7 +268,7 @@ export function spawnMergeReviewWorker(
   appendFileSync(logFile, `[${timestamp()}] Worker ${workerId} - Reviewing PR #${prNumber}\n`);
 
   const child = spawnClaude([
-    "--model", "claude-opus-4-6",
+    "--model", claudeModel,
     "--effort", "high",
     "--permission-mode", "bypassPermissions",
     "-p",
@@ -311,7 +317,7 @@ export function spawnCustomWorker(
     child = spawnDocker(config.dockerImage, prompt, workerDir);
   } else {
     child = spawnClaude([
-      "--model", "claude-opus-4-6",
+      "--model", claudeModel,
       "--effort", "high",
       "--permission-mode", "bypassPermissions",
       "-p",

@@ -2,8 +2,10 @@
 import { parseArgs } from "./config.js";
 import { runCleanup, runMergeOnly, runMain } from "./orchestrator.js";
 import { runTaskQueue } from "./taskqueue.js";
+import { setModel } from "./worker.js";
 
 const config = parseArgs(process.argv);
+setModel(config.model);
 
 const isTaskQueueMode = config.taskFile || config.taskCommand;
 

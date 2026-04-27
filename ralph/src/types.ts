@@ -19,6 +19,8 @@ export interface Config {
   // Clone-based isolation (instead of worktrees)
   cloneDir: string;
   useClones: boolean;
+  // Claude model
+  model: string;
 }
 
 export type LogLevel = "INFO" | "ERROR" | "WARN" | "OK";

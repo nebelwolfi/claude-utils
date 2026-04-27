@@ -16,7 +16,7 @@ const KNOWN_FLAGS = new Set([
   "help", "h", "workers", "iterations-per-worker", "skip-build",
   "cleanup", "merge-only", "local", "base-branch", "project-dir",
   "docker", "docker-image", "task-file", "task-command", "prompt-template",
-  "clone-dir", "use-clones",
+  "clone-dir", "use-clones", "model",
 ]);
 
 function printHelp(): never {
@@ -47,6 +47,7 @@ Options:
   --docker                     Run each worker in a Docker container (implies --use-clones)
   --docker-image NAME          Docker image name (default: ralph-worker)
   --prompt-template PATH       Custom prompt template file. Use {{task}} as placeholder.
+  --model NAME                 Claude model (default: claude-opus-4-6)
   --skip-build                 Skip cmake configure step
   --local                      Run entirely locally (no pushes, PRs, or gh calls)
   --base-branch NAME           Base branch (default: auto-detect)
@@ -153,5 +154,6 @@ export function parseArgs(argv: string[]): Config {
     promptTemplate: str("prompt-template", ""),
     cloneDir: str("clone-dir", ""),
     useClones: bool("use-clones") || docker,
+    model: str("model", "claude-opus-4-6"),
   };
 }
