@@ -1,7 +1,7 @@
-import { spawn, execFileSync } from "node:child_process";
-import { appendFileSync, writeFileSync } from "node:fs";
+import { spawn, execFileSync, execFile } from "node:child_process";
+import { appendFileSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import type { ChildProcess } from "node:child_process";
-import type { WorkerResult, WorkerStatus } from "./types.js";
+import type { WorkerResult, WorkerStatus, Config } from "./types.js";
 import { log } from "./logger.js";
 import { gitInDir, isKanbnPath } from "./git.js";
 
@@ -12,6 +12,12 @@ try {
   const result = execFileSync("where", ["claude"], { encoding: "utf-8" }).trim();
   resolvedClaudePath = result.split(/\r?\n/)[0];
 } catch { /* fallback to bare "claude" */ }
+
+let resolvedDockerPath = "docker";
+try {
+  const result = execFileSync("where", ["docker"], { encoding: "utf-8" }).trim();
+  resolvedDockerPath = result.split(/\r?\n/)[0];
+} catch { /* fallback to bare "docker" */ }
 
 function spawnClaude(
   args: string[],
@@ -136,6 +142,40 @@ gh pr comment ${prNumber} --body "Unable to auto-resolve conflicts: [explain wha
 CRITICAL: Never push files containing conflict markers. Always verify with git grep before pushing.`;
 }
 
+function spawnDocker(
+  imageName: string,
+  prompt: string,
+  workerDir: string,
+  wptDir?: string,
+): ChildProcess {
+  const args = [
+    "run", "--rm", "-i",
+    "--name", `ralph-worker-${Date.now()}`,
+    "-v", `${workerDir}:C:\\worker`,
+    ...(wptDir ? ["-v", `${wptDir}:C:\\wpt:ro`] : []),
+    "-e", `ANTHROPIC_API_KEY=${process.env.ANTHROPIC_API_KEY ?? ""}`,
+    "--isolation", "process",
+    imageName,
+    prompt,
+  ];
+
+  const child = spawn(resolvedDockerPath, args, {
+    stdio: ["pipe", "pipe", "pipe"],
+    shell: false,
+    windowsHide: true,
+  });
+
+  return child;
+}
+
+export function getCustomPrompt(templatePath: string, task: string): string {
+  if (!existsSync(templatePath)) {
+    throw new Error(`Prompt template not found: ${templatePath}`);
+  }
+  const template = readFileSync(templatePath, "utf-8");
+  return template.replace(/\{\{task\}\}/g, task);
+}
+
 function timestamp(): string {
   return new Date().toISOString().replace("T", " ").slice(0, 19);
 }
@@ -249,6 +289,66 @@ export function spawnMergeReviewWorker(
 
     child.on("error", (err) => {
       resolve({ status: "ERROR", workerId, taskId: `merge-review-${prNumber}`, error: err.message });
+    });
+  });
+
+  return { promise, process: child };
+}
+
+export function spawnCustomWorker(
+  workerId: number,
+  workerDir: string,
+  task: string,
+  prompt: string,
+  logFile: string,
+  baseBranch: string,
+  config: Config,
+): { promise: Promise<WorkerResult>; process: ChildProcess } {
+  appendFileSync(logFile, `[${timestamp()}] Worker ${workerId} - Task: ${task}\n`);
+
+  let child: ChildProcess;
+  if (config.docker) {
+    child = spawnDocker(config.dockerImage, prompt, workerDir);
+  } else {
+    child = spawnClaude([
+      "--model", "claude-opus-4-6",
+      "--effort", "high",
+      "--permission-mode", "bypassPermissions",
+      "-p",
+    ], prompt, workerDir);
+  }
+
+  const promise = new Promise<WorkerResult>((resolve) => {
+    const chunks: Buffer[] = [];
+    child.stdout?.on("data", (data) => chunks.push(data));
+    child.stderr?.on("data", (data) => chunks.push(data));
+
+    child.on("close", (exitCode) => {
+      const resultText = Buffer.concat(chunks).toString("utf-8");
+
+      const iterLog = `${logFile}.iter-${new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19)}.txt`;
+      writeFileSync(iterLog, resultText, "utf-8");
+      appendFileSync(logFile, `[${timestamp()}] Worker ${workerId} - exit=${exitCode} (saved to ${iterLog})\n`);
+
+      if (exitCode !== 0) {
+        resolve({ status: "ERROR", workerId, taskId: task, error: `exit code ${exitCode}` });
+        return;
+      }
+
+      // Auto-commit uncommitted submodule work
+      gitInDir(workerDir, "submodule", "foreach", "--recursive",
+        "git add -A && git diff --cached --quiet || git commit -m \"auto: uncommitted work\"");
+      const { stdout: rescueDirty } = gitInDir(workerDir, "status", "--porcelain");
+      if (rescueDirty) {
+        gitInDir(workerDir, "add", "-A");
+        gitInDir(workerDir, "commit", "-m", "auto: save uncommitted changes");
+      }
+
+      resolve({ status: "TASK_COMPLETE", workerId, taskId: task });
+    });
+
+    child.on("error", (err) => {
+      resolve({ status: "ERROR", workerId, taskId: task, error: err.message });
     });
   });
 

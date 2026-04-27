@@ -9,6 +9,16 @@ export interface Config {
   local: boolean;
   baseBranch: string;
   projectDir: string;
+  // Docker isolation
+  docker: boolean;
+  dockerImage: string;
+  // Custom task/prompt mode (bypasses kanban)
+  taskFile: string;
+  taskCommand: string;
+  promptTemplate: string;
+  // Clone-based isolation (instead of worktrees)
+  cloneDir: string;
+  useClones: boolean;
 }
 
 export type LogLevel = "INFO" | "ERROR" | "WARN" | "OK";
