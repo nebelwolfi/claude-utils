@@ -155,18 +155,29 @@ function spawnDocker(
   workerDir: string,
   wptDir?: string,
 ): ChildProcess {
-  // Mount host's .claude dir for credentials
+  // Mount host's .claude dir + .claude.json for credentials/config
   const homeDir = process.env.USERPROFILE ?? process.env.HOME ?? "";
   const claudeDir = join(homeDir, ".claude");
+  const containerHome = "C:\\Users\\ContainerAdministrator";
 
   // Use host's nat gateway IP so containers can reach host services (WPT server etc)
-  const hostIP = process.env.DOCKER_HOST_IP ?? "host.docker.internal";
+  // Detect host IP for Windows containers (host.docker.internal doesn't work)
+  let hostIP = process.env.DOCKER_HOST_IP ?? "";
+  if (!hostIP) {
+    try {
+      const result = execFileSync("powershell", ["-Command",
+        "(Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.InterfaceAlias -notlike '*Loopback*' -and $_.IPAddress -ne '127.0.0.1' } | Select-Object -First 1).IPAddress"
+      ], { encoding: "utf-8" });
+      hostIP = result.trim();
+    } catch { /* fallback */ }
+  }
+  if (!hostIP) hostIP = "10.0.0.1";
 
   const args = [
     "run", "--rm", "-i",
     "--name", `ralph-worker-${Date.now()}`,
     "-v", `${workerDir}:C:\\worker`,
-    "-v", `${claudeDir}:C:\\Users\\ContainerAdministrator\\.claude:ro`,
+    "-v", `${claudeDir}:${containerHome}\\.claude:ro`,
     ...(wptDir ? ["-v", `${wptDir}:C:\\wpt:ro`] : []),
     "--add-host", `web-platform.test:${hostIP}`,
     "--isolation", "process",

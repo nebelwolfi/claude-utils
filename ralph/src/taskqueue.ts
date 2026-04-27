@@ -82,32 +82,28 @@ function setupWorkerClone(
   log(`  Worker ${workerId}: cloning...`);
   mkdirSync(wDir, { recursive: true });
 
-  gitExecSync("git", ["clone", "--depth", "1", "--no-checkout", projectDir, wDir]);
+  gitExecSync("git", ["clone", "--no-checkout", projectDir, wDir]);
   gitExecSync("git", ["-C", wDir, "sparse-checkout", "init", "--cone"]);
   gitExecSync("git", ["-C", wDir, "sparse-checkout", "set", "apps", "CMakeLists.txt", "cmake"]);
   gitExecSync("git", ["-C", wDir, "checkout"]);
 
-  for (const sub of submodules) {
-    const src = join(projectDir, sub);
-    const dest = join(wDir, sub);
-    if (existsSync(src)) {
-      mkdirSync(join(dest, ".."), { recursive: true });
-      if (existsSync(dest)) rmSync(dest, { recursive: true, force: true });
-      gitExecSync("git", ["clone", "--local", src, dest]);
-    }
+  // Copy real remote URL so pushes go to GitHub, not the local clone source
+  const { stdout: realRemote } = gitExecSync("git", ["-C", projectDir, "remote", "get-url", "origin"]);
+  if (realRemote) {
+    gitExecSync("git", ["-C", wDir, "remote", "set-url", "origin", realRemote.trim()]);
   }
 
-  if (!config.skipBuild && existsSync(join(wDir, "CMakeLists.txt"))) {
-    log(`  Worker ${workerId}: configuring build...`);
-    gitExecSync("cmake", [
-      "-DCMAKE_BUILD_TYPE=Debug",
-      "-DCMAKE_MAKE_PROGRAM=ninja",
-      "-DCMAKE_C_COMPILER=clang",
-      "-DCMAKE_CXX_COMPILER=clang++",
-      "-G", "Ninja",
-      "-S", wDir,
-      "-B", join(wDir, "cmake-build-debug"),
-    ]);
+  // Reuse kanban's initializeSubmodules — clones locally but sets real GitHub remotes
+  const cloneState: OrchestratorState = {
+    mainRepo: projectDir, baseBranch: "", worktreeRoot: "", logDir: "",
+    submodules, local: false,
+    claimedTasks: new Map(), claimedSubTasks: new Map(), completedTasks: new Set(),
+  };
+  initializeSubmodules(cloneState, wDir);
+  patchClaudeMD(cloneState, wDir);
+
+  if (!config.skipBuild) {
+    configureWorktreeBuild(cloneState, wDir);
   }
 
   log(`  Worker ${workerId}: ready`, "OK");
