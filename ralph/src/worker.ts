@@ -1,5 +1,6 @@
 import { spawn, execFileSync, execFile } from "node:child_process";
 import { appendFileSync, writeFileSync, readFileSync, existsSync } from "node:fs";
+import { join } from "node:path";
 import type { ChildProcess } from "node:child_process";
 import type { WorkerResult, WorkerStatus, Config } from "./types.js";
 import { log } from "./logger.js";
@@ -154,12 +155,16 @@ function spawnDocker(
   workerDir: string,
   wptDir?: string,
 ): ChildProcess {
+  // Mount host's .claude dir for credentials
+  const homeDir = process.env.USERPROFILE ?? process.env.HOME ?? "";
+  const claudeDir = join(homeDir, ".claude");
+
   const args = [
     "run", "--rm", "-i",
     "--name", `ralph-worker-${Date.now()}`,
     "-v", `${workerDir}:C:\\worker`,
+    "-v", `${claudeDir}:C:\\Users\\ContainerAdministrator\\.claude:ro`,
     ...(wptDir ? ["-v", `${wptDir}:C:\\wpt:ro`] : []),
-    "-e", `ANTHROPIC_API_KEY=${process.env.ANTHROPIC_API_KEY ?? ""}`,
     "--isolation", "process",
     imageName,
     prompt,
