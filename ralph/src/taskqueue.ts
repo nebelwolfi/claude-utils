@@ -2,10 +2,12 @@ import { existsSync, readFileSync, mkdirSync, rmSync } from "node:fs";
 import { join, basename } from "node:path";
 import { execFileSync } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
-import type { Config, WorkerResult } from "./types.js";
+import type { Config, WorkerResult, OrchestratorState } from "./types.js";
 import { log } from "./logger.js";
-import { execSync as gitExecSync } from "./git.js";
+import { execSync as gitExecSync, gitInDir, gitSync } from "./git.js";
 import { spawnCustomWorker, getCustomPrompt } from "./worker.js";
+import { publishWorkerResults, createTaskPR, drainPendingPRs } from "./merge.js";
+import { newMergeWorktree, removeMergeWorktree } from "./worktree.js";
 import treeKill from "tree-kill";
 
 interface ActiveJob {
@@ -37,7 +39,6 @@ function getPrompt(config: Config, task: string): string {
   if (config.promptTemplate) {
     return getCustomPrompt(config.promptTemplate, task);
   }
-  // Default prompt for task-queue mode
   return `You are fixing exactly ONE task. When done, commit and exit.
 
 ## Your task
@@ -49,6 +50,15 @@ ${task}
 3. Implement the fix.
 4. Build and verify.
 5. Commit with a descriptive message.`;
+}
+
+// Sanitize a task string into a valid git branch name component
+function taskToBranchId(task: string): string {
+  return task
+    .replace(/[^a-zA-Z0-9._-]/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 60);
 }
 
 function setupWorkerClone(
@@ -67,14 +77,11 @@ function setupWorkerClone(
   log(`  Worker ${workerId}: cloning...`);
   mkdirSync(wDir, { recursive: true });
 
-  // Clone top-level repo
   gitExecSync("git", ["clone", "--depth", "1", "--no-checkout", projectDir, wDir]);
   gitExecSync("git", ["-C", wDir, "sparse-checkout", "init", "--cone"]);
-  // Detect top-level dirs to include (everything except submodule parents)
   gitExecSync("git", ["-C", wDir, "sparse-checkout", "set", "apps", "CMakeLists.txt", "cmake"]);
   gitExecSync("git", ["-C", wDir, "checkout"]);
 
-  // Clone submodules from local repo
   for (const sub of submodules) {
     const src = join(projectDir, sub);
     const dest = join(wDir, sub);
@@ -85,7 +92,6 @@ function setupWorkerClone(
     }
   }
 
-  // Configure cmake build
   if (!config.skipBuild && existsSync(join(wDir, "CMakeLists.txt"))) {
     log(`  Worker ${workerId}: configuring build...`);
     gitExecSync("cmake", [
@@ -114,75 +120,82 @@ function discoverSubmodules(projectDir: string): string[] {
   return subs;
 }
 
-function collectCommits(
-  config: Config,
-  cloneRoot: string,
-  projectDir: string,
-  submodules: string[],
-): number {
-  let cherryPicked = 0;
+function switchWorkerToTaskBranch(workerDir: string, task: string, baseBranch: string, local: boolean): string {
+  const branchId = taskToBranchId(task);
+  const taskBranch = `ralph/${branchId}`;
 
-  for (let i = 1; i <= config.workers; i++) {
-    const wDir = join(cloneRoot, `worker-${i}`);
-    if (!existsSync(wDir)) continue;
-
-    for (const sub of submodules) {
-      const mainSub = join(projectDir, sub);
-      const workerSub = join(wDir, sub);
-      if (!existsSync(join(workerSub, ".git"))) continue;
-
-      const mainHead = gitExecSync("git", ["-C", mainSub, "rev-parse", "HEAD"]).stdout.trim();
-      const workerHead = gitExecSync("git", ["-C", workerSub, "rev-parse", "HEAD"]).stdout.trim();
-      if (!workerHead || workerHead === mainHead) continue;
-
-      // Fetch worker's commits into main submodule
-      gitExecSync("git", ["-C", mainSub, "fetch", workerSub, "main"]);
-
-      const hashResult = gitExecSync("git", ["-C", mainSub, "log", "--format=%H", "--reverse", `${mainHead}..${workerHead}`]);
-      if (!hashResult.stdout) continue;
-
-      for (const hash of hashResult.stdout.trim().split("\n")) {
-        if (!hash) continue;
-        const { exitCode } = gitExecSync("git", ["-C", mainSub, "cherry-pick", hash]);
-        if (exitCode === 0) {
-          const msg = gitExecSync("git", ["-C", mainSub, "log", "--format=%s", "-1"]).stdout.trim();
-          log(`  Worker ${i}: ${msg}`, "OK");
-          cherryPicked++;
-        } else {
-          log(`  Worker ${i}: conflict on ${hash.slice(0, 8)}, skipping`, "WARN");
-          gitExecSync("git", ["-C", mainSub, "cherry-pick", "--abort"]);
-        }
-      }
-    }
+  // Save any uncommitted work
+  const { stdout: dirty } = gitInDir(workerDir, "status", "--porcelain");
+  if (dirty) {
+    gitInDir(workerDir, "add", "-A");
+    gitInDir(workerDir, "commit", "-m", "WIP: auto-save before task switch");
   }
 
-  return cherryPicked;
+  // Also commit submodule changes
+  gitInDir(workerDir, "submodule", "foreach", "--recursive",
+    "git add -A && git diff --cached --quiet || git commit -m \"WIP: auto-save\"");
+  gitInDir(workerDir, "add", "-A");
+  const { exitCode: cachedExit } = gitInDir(workerDir, "diff", "--cached", "--quiet");
+  if (cachedExit !== 0) {
+    gitInDir(workerDir, "commit", "-m", "WIP: auto-save submodule refs");
+  }
+
+  // Try checking out existing branch, or create new one
+  if (!local) {
+    gitInDir(workerDir, "fetch", "origin", baseBranch, taskBranch);
+  }
+
+  const { exitCode: localExists } = gitInDir(workerDir, "rev-parse", "--verify", taskBranch);
+  if (localExists === 0) {
+    gitInDir(workerDir, "checkout", taskBranch);
+  } else if (!local) {
+    const { exitCode: remoteExists } = gitInDir(workerDir, "rev-parse", "--verify", `origin/${taskBranch}`);
+    if (remoteExists === 0) {
+      gitInDir(workerDir, "checkout", "-b", taskBranch, `origin/${taskBranch}`);
+    } else {
+      gitInDir(workerDir, "checkout", "-b", taskBranch, local ? baseBranch : `origin/${baseBranch}`);
+    }
+  } else {
+    gitInDir(workerDir, "checkout", "-b", taskBranch, baseBranch);
+  }
+
+  return branchId;
 }
 
 export async function runTaskQueue(config: Config): Promise<void> {
   const projectDir = config.projectDir;
   const projectName = basename(projectDir);
-  const cloneRoot = config.cloneDir || join("C:\\worktrees", projectName);
+  const cloneRoot = config.cloneDir || join("D:\\worktrees", projectName);
   const logDir = join(cloneRoot, "logs");
   const logFile = join(logDir, "ralph.log");
 
   mkdirSync(logDir, { recursive: true });
 
-  // Load tasks
   const allTasks = loadTasks(config);
   const maxTasks = config.iterationsPerWorker * config.workers;
   const tasks = maxTasks > 0 && maxTasks < allTasks.length ? allTasks.slice(0, maxTasks) : allTasks;
 
   log(`Loaded ${allTasks.length} tasks, processing ${tasks.length}`);
 
-  // Discover submodules
   const submodules = discoverSubmodules(projectDir);
   log(`Submodules: ${submodules.join(", ") || "(none)"}`);
 
-  // Determine base branch
   const baseBranch = config.baseBranch ||
     gitExecSync("git", ["-C", projectDir, "rev-parse", "--abbrev-ref", "HEAD"]).stdout.trim() ||
     "main";
+
+  // Build OrchestratorState for reuse with merge.ts functions
+  const state: OrchestratorState = {
+    mainRepo: projectDir,
+    baseBranch,
+    worktreeRoot: cloneRoot,
+    logDir,
+    submodules,
+    local: config.local,
+    claimedTasks: new Map(),
+    claimedSubTasks: new Map(),
+    completedTasks: new Set(),
+  };
 
   // Set up worker clones
   log(`Setting up ${config.workers} worker clones in ${cloneRoot}`);
@@ -192,14 +205,20 @@ export async function runTaskQueue(config: Config): Promise<void> {
     workerDirs.set(i, wDir);
   }
 
-  // Work queue
+  // Set up merge worktree (for PR conflict resolution)
+  let mergeWorktreePath: string | null = null;
+  if (!config.local) {
+    mergeWorktreePath = newMergeWorktree(state);
+  }
+
   const queue = [...tasks];
   const activeJobs: Map<number, ActiveJob> = new Map();
+  // Track which branchId each slot is working on
+  const slotBranchIds: Map<number, string> = new Map();
   let tasksDone = 0;
   let tasksLaunched = 0;
   let shuttingDown = false;
 
-  // Graceful shutdown
   let sigintCount = 0;
   process.on("SIGINT", () => {
     sigintCount++;
@@ -215,17 +234,25 @@ export async function runTaskQueue(config: Config): Promise<void> {
     }
   });
 
+  function launchWorker(slot: number, task: string): ActiveJob {
+    const wDir = workerDirs.get(slot)!;
+    const branchId = switchWorkerToTaskBranch(wDir, task, baseBranch, config.local);
+    slotBranchIds.set(slot, branchId);
+    state.claimedTasks.set(branchId, slot);
+
+    const prompt = getPrompt(config, task);
+    const { promise, process: proc } = spawnCustomWorker(
+      slot, wDir, task, prompt, logFile, baseBranch, config,
+    );
+    return { promise, process: proc, task };
+  }
+
   // Initial fill
   for (let slot = 1; slot <= config.workers; slot++) {
     if (queue.length === 0 || shuttingDown) break;
     const task = queue.shift()!;
     tasksLaunched++;
-    const prompt = getPrompt(config, task);
-    const wDir = workerDirs.get(slot)!;
-    const { promise, process: proc } = spawnCustomWorker(
-      slot, wDir, task, prompt, logFile, baseBranch, config,
-    );
-    activeJobs.set(slot, { promise, process: proc, task });
+    activeJobs.set(slot, launchWorker(slot, task));
     log(`[${tasksLaunched}] Slot ${slot} -> ${task.slice(0, 80)}`);
   }
 
@@ -234,30 +261,37 @@ export async function runTaskQueue(config: Config): Promise<void> {
     await new Promise((r) => setTimeout(r, 5000));
 
     for (const [slot, job] of activeJobs) {
-      // Check if promise resolved by racing with a zero timeout
       const result = await Promise.race([
         job.promise.then((r) => r),
         new Promise<null>((r) => setTimeout(() => r(null), 0)),
       ]);
 
-      if (result === null) continue; // still running
+      if (result === null) continue;
 
       tasksDone++;
+      const branchId = slotBranchIds.get(slot) ?? taskToBranchId(job.task);
+      const wDir = workerDirs.get(slot)!;
+
       const color = result.status === "TASK_COMPLETE" ? "OK" :
                     result.status === "NO_COMMITS" ? "WARN" : "ERROR";
       log(`[done ${tasksDone}/${tasksLaunched}] Slot ${slot}: ${result.taskId.slice(0, 60)} (${result.status})`, color);
 
+      // Publish + PR on success
+      if (result.status === "TASK_COMPLETE") {
+        const published = publishWorkerResults(state, wDir, slot, branchId);
+        if (published) {
+          state.completedTasks.add(branchId);
+          createTaskPR(state, branchId);
+        }
+      }
+
+      state.claimedTasks.delete(branchId);
       activeJobs.delete(slot);
 
       if (queue.length > 0 && !shuttingDown) {
         const task = queue.shift()!;
         tasksLaunched++;
-        const prompt = getPrompt(config, task);
-        const wDir = workerDirs.get(slot)!;
-        const { promise, process: proc } = spawnCustomWorker(
-          slot, wDir, task, prompt, logFile, baseBranch, config,
-        );
-        activeJobs.set(slot, { promise, process: proc, task });
+        activeJobs.set(slot, launchWorker(slot, task));
         log(`[${tasksLaunched}] Slot ${slot} -> ${task.slice(0, 80)}`);
       }
     }
@@ -265,23 +299,17 @@ export async function runTaskQueue(config: Config): Promise<void> {
 
   log(`Done: ${tasksDone} tasks completed`, "OK");
 
-  // Collect commits
-  log("Collecting worker commits...");
-  const cherryPicked = collectCommits(config, cloneRoot, projectDir, submodules);
-
-  if (cherryPicked > 0) {
-    log(`Cherry-picked ${cherryPicked} commit(s) into main repo`, "OK");
-    // Stage updated submodule pointers
-    for (const sub of submodules) {
-      gitExecSync("git", ["-C", projectDir, "add", sub]);
-    }
-    gitExecSync("git", ["-C", projectDir, "commit", "-m",
-      `Task queue: ${cherryPicked} fix(es) from ${config.workers} worker(s)`]);
-  } else {
-    log("No commits to collect.", "WARN");
+  // Drain pending PRs
+  if (!config.local) {
+    log("Draining pending PRs...");
+    await drainPendingPRs(state, mergeWorktreePath, workerDirs);
   }
 
-  // Cleanup clones
+  // Cleanup
+  if (mergeWorktreePath) {
+    removeMergeWorktree(state);
+  }
+
   log("Cleaning up worker clones...");
   for (let i = 1; i <= config.workers; i++) {
     const wDir = join(cloneRoot, `worker-${i}`);
