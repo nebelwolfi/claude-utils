@@ -159,12 +159,16 @@ function spawnDocker(
   const homeDir = process.env.USERPROFILE ?? process.env.HOME ?? "";
   const claudeDir = join(homeDir, ".claude");
 
+  // Use host's nat gateway IP so containers can reach host services (WPT server etc)
+  const hostIP = process.env.DOCKER_HOST_IP ?? "host.docker.internal";
+
   const args = [
     "run", "--rm", "-i",
     "--name", `ralph-worker-${Date.now()}`,
     "-v", `${workerDir}:C:\\worker`,
     "-v", `${claudeDir}:C:\\Users\\ContainerAdministrator\\.claude:ro`,
     ...(wptDir ? ["-v", `${wptDir}:C:\\wpt:ro`] : []),
+    "--add-host", `web-platform.test:${hostIP}`,
     "--isolation", "process",
     imageName,
     prompt,
