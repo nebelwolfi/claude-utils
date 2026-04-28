@@ -204,6 +204,7 @@ function spawnDocker(
     "-e", `WPT_ROOT=C:/wpt`,
     "-e", `WPT_IP=${hostIP}`,
     "-e", "RALPH_HEADLESS=1",
+    "-v", `C:\\Windows\\Fonts:C:\\Windows\\Fonts:ro`,
     "--add-host", `web-platform.test:${hostIP}`,
     "--isolation", "process",
     "--entrypoint", claudeExe,
@@ -274,21 +275,25 @@ export function spawnWorker(
   const child = spawnClaude(claudeArgs, prompt, worktreePath, { ...process.env });
 
   const promise = new Promise<WorkerResult>((resolve) => {
-    const chunks: Buffer[] = [];
-    child.stdout?.on("data", (data) => chunks.push(data));
-    child.stderr?.on("data", (data) => chunks.push(data));
+    const stdoutChunks: Buffer[] = [];
+    const stderrChunks: Buffer[] = [];
+    child.stdout?.on("data", (data) => stdoutChunks.push(data));
+    child.stderr?.on("data", (data) => stderrChunks.push(data));
 
     child.on("close", (exitCode) => {
-      const resultText = Buffer.concat(chunks).toString("utf-8");
+      const resultText = Buffer.concat([...stdoutChunks, ...stderrChunks]).toString("utf-8");
+      const stderrText = Buffer.concat(stderrChunks).toString("utf-8");
 
       const iterLog = `${logFile}.iter-${new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19)}.txt`;
       writeFileSync(iterLog, resultText, "utf-8");
+
+      const exitReason = classifyExitReason(exitCode, stderrText);
 
       if (exitCode !== 0) {
         const lastLines = resultText.split("\n").slice(-5).join(" | ").slice(0, 300);
         const errorSummary = `exit code ${exitCode} - ${lastLines}`;
         appendFileSync(logFile, `[${timestamp()}] Worker ${workerId} - ERROR: ${errorSummary} (saved to ${iterLog})\n`);
-        resolve({ status: "ERROR", workerId, taskId, error: errorSummary });
+        resolve({ status: "ERROR", workerId, taskId, error: errorSummary, exitReason });
         return;
       }
 
@@ -311,11 +316,11 @@ export function spawnWorker(
       }
 
       const status: WorkerStatus = hasNonKanbnChanges ? "TASK_COMPLETE" : "NO_COMMITS";
-      resolve({ status, workerId, taskId });
+      resolve({ status, workerId, taskId, exitReason });
     });
 
     child.on("error", (err) => {
-      resolve({ status: "ERROR", workerId, taskId, error: err.message });
+      resolve({ status: "ERROR", workerId, taskId, error: err.message, exitReason: "error" });
     });
   });
 
