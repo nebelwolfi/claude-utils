@@ -363,6 +363,7 @@ export function spawnCustomWorker(
     "--permission-mode", "bypassPermissions",
     "--output-format", "stream-json",
     "--include-partial-messages",
+    "--verbose",
     "-p",
   ];
 

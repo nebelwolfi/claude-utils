@@ -1,0 +1,23 @@
+{
+  "name": "log-viewer",
+  "version": "1.0.0",
+  "description": "Browser-based real-time viewer for Ralph worker JSONL logs",
+  "type": "module",
+  "main": "dist/server.js",
+  "installConfig": {
+    "displayName": "Ralph Log Viewer",
+    "componentType": "cli"
+  },
+  "bin": {
+    "Log-Viewer": "dist/server.js"
+  },
+  "scripts": {
+    "build": "tsc && node -e \"require('fs').copyFileSync('src/app.html','dist/app.html')\"",
+    "prepare": "npm run build",
+    "start": "node dist/server.js"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.5.0"
+  }
+}
