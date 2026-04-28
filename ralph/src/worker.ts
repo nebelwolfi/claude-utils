@@ -1,5 +1,5 @@
 import { spawn, execFileSync, execFile } from "node:child_process";
-import { appendFileSync, writeFileSync, readFileSync, existsSync, createWriteStream } from "node:fs";
+import { appendFileSync, writeFileSync, readFileSync, existsSync, createWriteStream, copyFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { ChildProcess } from "node:child_process";
 import type { WorkerResult, WorkerStatus, Config } from "./types.js";
@@ -156,10 +156,25 @@ function spawnDocker(
   claudeArgs?: string[],
   wptDir?: string,
 ): ChildProcess {
-  // Mount host's .claude dir + .claude.json for credentials/config
   const homeDir = process.env.USERPROFILE ?? process.env.HOME ?? "";
   const claudeDir = join(homeDir, ".claude");
   const containerHome = "C:\\Users\\ContainerAdministrator";
+
+  // Copy credentials into the worker dir so we can mount it as a writable .claude
+  // (mounting host .claude as :ro blocks claude from creating session state)
+  const workerClaudeDir = join(workerDir, ".claude-config");
+  if (!existsSync(workerClaudeDir)) {
+    mkdirSync(workerClaudeDir, { recursive: true });
+  }
+  const credsSrc = join(claudeDir, ".credentials.json");
+  if (existsSync(credsSrc)) {
+    copyFileSync(credsSrc, join(workerClaudeDir, ".credentials.json"));
+  }
+  // Copy .claude.json if it exists
+  const configSrc = join(homeDir, ".claude.json");
+  if (existsSync(configSrc)) {
+    copyFileSync(configSrc, join(workerDir, ".claude.json"));
+  }
 
   // Use host's nat gateway IP so containers can reach host services (WPT server etc)
   // Detect host IP for Windows containers (host.docker.internal doesn't work)
@@ -182,7 +197,8 @@ function spawnDocker(
     "run", "--rm", "-i",
     "--name", `ralph-worker-${Date.now()}`,
     "-v", `${workerDir}:C:\\worker`,
-    "-v", `${claudeDir}:${containerHome}\\.claude:ro`,
+    "-v", `${workerClaudeDir}:${containerHome}\\.claude`,
+    "-e", `CLAUDE_CONFIG_DIR=${containerHome}\\.claude`,
     ...(wptDir ? ["-v", `${wptDir}:C:\\wpt:ro`] : []),
     "--add-host", `web-platform.test:${hostIP}`,
     "--isolation", "process",
