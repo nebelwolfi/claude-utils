@@ -154,7 +154,7 @@ function spawnDocker(
   prompt: string,
   workerDir: string,
   claudeArgs?: string[],
-  wptDir?: string,
+  extraMounts?: string[],
 ): ChildProcess {
   const homeDir = process.env.USERPROFILE ?? process.env.HOME ?? "";
   const claudeDir = join(homeDir, ".claude");
@@ -199,7 +199,7 @@ function spawnDocker(
     "-v", `${workerDir}:C:\\worker`,
     "-v", `${workerClaudeDir}:${containerHome}\\.claude`,
     "-e", `CLAUDE_CONFIG_DIR=${containerHome}\\.claude`,
-    ...(wptDir ? ["-v", `${wptDir}:C:\\wpt:ro`] : []),
+    ...(extraMounts ?? []).flatMap((m) => ["-v", `${m}:${m}:ro`]),
     "--add-host", `web-platform.test:${hostIP}`,
     "--isolation", "process",
     "--entrypoint", claudeExe,
@@ -369,7 +369,7 @@ export function spawnCustomWorker(
 
   let child: ChildProcess;
   if (config.docker) {
-    child = spawnDocker(config.dockerImage, prompt, workerDir, claudeArgs);
+    child = spawnDocker(config.dockerImage, prompt, workerDir, claudeArgs, config.dockerMounts);
   } else {
     child = spawnClaude(claudeArgs, prompt, workerDir);
   }

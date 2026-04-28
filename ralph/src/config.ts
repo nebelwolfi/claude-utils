@@ -16,7 +16,7 @@ const KNOWN_FLAGS = new Set([
   "help", "h", "workers", "iterations-per-worker", "skip-build",
   "cleanup", "merge-only", "local", "base-branch", "project-dir",
   "docker", "docker-image", "task-file", "task-command", "prompt-template",
-  "clone-dir", "use-clones", "model",
+  "clone-dir", "use-clones", "model", "docker-mount",
 ]);
 
 function printHelp(): never {
@@ -48,6 +48,7 @@ Options:
   --docker-image NAME          Docker image name (default: ralph-worker)
   --prompt-template PATH       Custom prompt template file. Use {{task}} as placeholder.
   --model NAME                 Claude model (default: claude-opus-4-6)
+  --docker-mount PATH          Mount host dir into container (repeatable, or array in JSON)
   --skip-build                 Skip cmake configure step
   --local                      Run entirely locally (no pushes, PRs, or gh calls)
   --base-branch NAME           Base branch (default: auto-detect)
@@ -155,5 +156,22 @@ export function parseArgs(argv: string[]): Config {
     cloneDir: str("clone-dir", ""),
     useClones: bool("use-clones") || docker,
     model: str("model", "claude-opus-4-6"),
+    dockerMounts: (() => {
+      // Collect all --docker-mount flags from CLI
+      const mounts: string[] = [];
+      for (let i = 0; i < filteredArgs.length; i++) {
+        if (filteredArgs[i] === "--docker-mount" && i + 1 < filteredArgs.length) {
+          mounts.push(filteredArgs[++i]);
+        }
+      }
+      // Also read from config file (string or array)
+      const fileMounts = fileDefaults["docker-mount"];
+      if (Array.isArray(fileMounts)) {
+        for (const m of fileMounts) mounts.push(String(m));
+      } else if (typeof fileMounts === "string") {
+        mounts.push(fileMounts);
+      }
+      return mounts;
+    })(),
   };
 }

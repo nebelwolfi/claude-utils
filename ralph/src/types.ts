@@ -21,6 +21,8 @@ export interface Config {
   useClones: boolean;
   // Claude model
   model: string;
+  // Extra host directories to mount read-only into Docker containers
+  dockerMounts: string[];
 }
 
 export type LogLevel = "INFO" | "ERROR" | "WARN" | "OK";
