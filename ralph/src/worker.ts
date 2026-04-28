@@ -243,6 +243,9 @@ const RATE_LIMIT_PATTERNS = [
   /spending.?limit/i,
   /budget.?exceeded/i,
   /over.?capacity/i,
+  /you've hit your limit/i,
+  /hit your limit/i,
+  /resets?\s+\d/i,
 ];
 
 export function classifyExitReason(exitCode: number | null, stderrText: string): ExitReason {

@@ -12,7 +12,7 @@
   --red:#f87171;--orange:#fbbf24;--green:#00ff41;--purple:#c084fc;
   --cyan:#22d3ee;--dim:#3f3f46;
 }
-body{font-family:"SFMono-Regular",Consolas,"Liberation Mono",Menlo,monospace;background:var(--bg);color:var(--text);height:100vh;overflow:hidden;position:relative;--header-h:66px}
+body{font-family:"SFMono-Regular",Consolas,"Liberation Mono",Menlo,monospace;background:var(--bg);color:var(--text);height:100vh;overflow:hidden;position:relative;display:flex;flex-direction:column}
 body::after{content:"";position:fixed;inset:0;background:repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,255,65,0.015) 2px,rgba(0,255,65,0.015) 4px);pointer-events:none;z-index:9999}
 
 header{padding:10px 20px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:16px;flex-wrap:wrap;background:rgba(0,255,65,0.02)}
@@ -25,15 +25,16 @@ header .stats .cost{color:var(--green)}
 
 .ralph-log-panel{display:none;border-bottom:1px solid var(--border);max-height:180px;overflow-y:auto;font-size:11px;padding:6px 20px;background:rgba(0,255,65,0.01);line-height:1.6}
 .ralph-log-panel.open{display:block}
-.ralph-log-panel.open~.grid{height:calc(100vh - var(--header-h) - 180px)}
+.ralph-log-panel.open~.grid{flex:1}
 .ralph-log-panel .log-task{color:var(--cyan)}
 .ralph-log-panel .log-ok{color:var(--green)}
 .ralph-log-panel .log-err{color:var(--red)}
 .ralph-log-panel .log-ts{color:var(--dim)}
 
-.grid{display:grid;gap:4px;padding:4px;height:calc(100vh - var(--header-h));overflow:hidden}
+.grid{display:flex;gap:4px;padding:4px;flex:1;min-height:0;overflow:hidden}
+.grid-col{flex:1 1 0;display:flex;flex-direction:column;gap:4px;min-height:0;min-width:0;overflow:hidden}
 
-.worker-card{background:var(--surface);border:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden;transition:border-color .3s,box-shadow .3s;min-height:0}
+.worker-card{background:var(--surface);border:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden;transition:border-color .3s,box-shadow .3s;min-height:0;flex:1 1 0}
 .worker-card.active{border-color:var(--green);box-shadow:0 0 12px rgba(0,255,65,0.1),inset 0 0 30px rgba(0,255,65,0.02)}
 .worker-card.error{border-color:var(--red);box-shadow:0 0 12px rgba(255,51,51,0.15)}
 .worker-card.completed{border-color:var(--dim)}
@@ -85,6 +86,19 @@ header .stats .cost{color:var(--green)}
 .worker-footer{padding:6px 10px;border-top:1px solid var(--border);font-size:10px;color:var(--muted);display:flex;gap:12px;background:rgba(0,255,65,0.02)}
 .worker-footer .cost{color:var(--green);text-shadow:0 0 6px rgba(0,255,65,0.3)}
 .worker-footer .turns{color:var(--cyan)}
+
+.tool-collapsed{display:none}
+.tool-group-toggle{color:var(--dim);font-size:10px;cursor:pointer;padding:1px 6px;border-left:2px solid var(--dim);margin:1px 0}
+.tool-group-toggle:hover{color:var(--purple);border-left-color:var(--purple)}
+.tool-group-toggle.tool-expanded{color:var(--purple);border-left-color:var(--purple)}
+
+.session-group{margin:0 0 4px}
+.session-toggle{color:var(--accent);font-size:10px;cursor:pointer;padding:3px 8px;border:1px solid var(--border);background:rgba(0,255,65,0.03);display:flex;gap:8px;align-items:center}
+.session-toggle:hover{border-color:var(--accent);background:rgba(0,255,65,0.06)}
+.session-toggle .session-summary{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text)}
+.session-toggle .session-stats{color:var(--muted);font-size:9px;white-space:nowrap}
+.session-body{display:none}
+.session-body.open{display:block}
 
 .empty-state{text-align:center;padding:80px 20px;color:var(--muted);font-size:12px;letter-spacing:2px;text-transform:uppercase}
 
@@ -210,9 +224,12 @@ function getWorkerState(id) {
       cost: null,
       duration: null,
       turns: null,
+      turnCount: 0,
+      _seenMsgIds: new Set(),
       resultText: null,
       _renderedCount: 0,
       _dirtyFrom: 0,
+      _lastStatus: 'idle',
     });
   }
   return state.workers.get(id);
@@ -305,10 +322,25 @@ function processEvent(ws, event) {
     const msgId = msg.id;
 
     if (msgId && msgId === ws.lastMessageId) {
+      // Preserve text blocks from earlier versions — Claude CLI drops them
+      // from the final event when tool_use follows
+      const savedTexts = [];
+      for (let k = ws.messages.length - 1; k >= 0; k--) {
+        if (ws.messages[k].msgId !== msgId) break;
+        if (ws.messages[k].kind === 'text') savedTexts.unshift(ws.messages[k]);
+      }
       while (ws.messages.length > 0 && ws.messages[ws.messages.length - 1].msgId === msgId) {
         ws.messages.pop();
       }
       ws._dirtyFrom = Math.min(ws._dirtyFrom, ws.messages.length);
+      // Re-add saved texts if new content doesn't have text
+      const newHasText = (msg.content || []).some(c => c.type === 'text');
+      if (!newHasText && savedTexts.length > 0) {
+        for (const t of savedTexts) ws.messages.push(t);
+      }
+    } else if (msgId && !ws._seenMsgIds.has(msgId)) {
+      ws._seenMsgIds.add(msgId);
+      ws.turnCount++;
     }
     ws.lastMessageId = msgId;
     processAssistantContent(ws, msg.content || [], msgId);
@@ -339,6 +371,14 @@ function processEvent(ws, event) {
     ws.turns = event.num_turns;
     ws.resultText = event.result;
     ws.lastMessageId = null;
+    const summary = event.result ? (event.result.length > 150 ? event.result.slice(0, 150) + '...' : event.result) : (event.subtype === 'success' ? 'completed' : 'error');
+    ws.messages.push({
+      kind: 'session_end',
+      text: summary,
+      cost: event.cost_usd,
+      duration: event.duration_ms,
+      turns: event.num_turns,
+    });
   }
 
   if (ws.messages.length > 500) {
@@ -391,14 +431,19 @@ function renderRalphLog() {
   _ralphLogRendered = lines.length;
 }
 
-function computeGridLayout(n) {
-  if (n <= 1) return { cols: 1, rows: 1 };
-  if (n === 2) return { cols: 2, rows: 1 };
-  if (n === 3) return { cols: 3, rows: 1 };
-  if (n === 4) return { cols: 2, rows: 2 };
-  const cols = Math.ceil(Math.sqrt(n));
-  const rows = Math.ceil(n / cols);
-  return { cols, rows };
+function computeColumns(n) {
+  if (n <= 1) return 1;
+  if (n <= 3) return n;
+  if (n <= 4) return 2;
+  return Math.ceil(Math.sqrt(n));
+}
+
+function distributeToColumns(ids, numCols) {
+  const cols = Array.from({ length: numCols }, () => []);
+  for (let i = 0; i < ids.length; i++) {
+    cols[i % numCols].push(ids[i]);
+  }
+  return cols;
 }
 
 function renderMessage(msg, container) {
@@ -453,6 +498,15 @@ function renderMessage(msg, container) {
     box.dataset.taskId = msg.taskId;
     renderAgentInner(msg, box);
     container.appendChild(box);
+  } else if (msg.kind === 'session_end') {
+    const div = document.createElement('div');
+    div.className = 'msg-session-end';
+    div.dataset.sessionEnd = '1';
+    div.dataset.summary = msg.text;
+    div.dataset.cost = msg.cost ?? '';
+    div.dataset.duration = msg.duration ?? '';
+    div.dataset.turns = msg.turns ?? '';
+    container.appendChild(div);
   }
 }
 
@@ -484,31 +538,145 @@ function renderAgentInner(msg, box) {
   }
 }
 
+function isToolNode(el) {
+  return el.classList.contains('msg-tool') || el.classList.contains('msg-tool-input') || el.classList.contains('msg-tool-result-body') || el.classList.contains('msg-thinking') || el.classList.contains('msg-thinking-body');
+}
+
+function collapseToolGroups(container) {
+  const children = [...container.children];
+
+  // Find text nodes and collapse tool/thinking runs around them
+  for (let i = 0; i < children.length; i++) {
+    const el = children[i];
+    if (!el.classList.contains('msg-text')) continue;
+
+    // Collapse tools BEFORE this text
+    const before = [];
+    let j = i - 1;
+    while (j >= 0 && isToolNode(children[j]) && !children[j].classList.contains('tool-collapsed')) {
+      before.unshift(children[j]);
+      j--;
+    }
+
+    // Collapse tools AFTER this text (same msgIdx = same turn)
+    const myIdx = el.dataset.msgIdx;
+    const after = [];
+    let k = i + 1;
+    while (k < children.length && isToolNode(children[k]) && !children[k].classList.contains('tool-collapsed')) {
+      after.push(children[k]);
+      k++;
+    }
+
+    const allTools = [...before, ...after];
+    const toolCount = allTools.filter(n => n.classList.contains('msg-tool')).length;
+    if (toolCount === 0) continue;
+
+    // Hide tool nodes via CSS class (no reparenting)
+    for (const node of allTools) node.classList.add('tool-collapsed');
+
+    // Insert a toggle summary after the text (or before if tools were before)
+    const existing = el.nextElementSibling;
+    if (existing && existing.classList.contains('tool-group-toggle')) continue;
+
+    const toggle = document.createElement('div');
+    toggle.className = 'tool-group-toggle';
+    toggle.dataset.msgIdx = myIdx;
+    toggle.textContent = '> ' + toolCount + ' tool call' + (toolCount > 1 ? 's' : '');
+    toggle.addEventListener('click', () => {
+      for (const node of allTools) node.classList.toggle('tool-collapsed');
+      toggle.classList.toggle('tool-expanded');
+    });
+    el.after(toggle);
+  }
+}
+
+function collapseCompletedSessions(container) {
+  const endMarkers = container.querySelectorAll('[data-session-end="1"]');
+  for (const marker of endMarkers) {
+    // Already wrapped
+    if (marker.parentElement?.classList.contains('session-group')) continue;
+
+    // Collect all preceding siblings back to the previous session-group or start
+    const nodes = [];
+    let el = marker.previousElementSibling;
+    while (el) {
+      if (el.classList.contains('session-group')) break;
+      nodes.unshift(el);
+      el = el.previousElementSibling;
+    }
+    if (nodes.length === 0) { marker.style.display = 'none'; continue; }
+
+    const summary = marker.dataset.summary || 'session completed';
+    const statParts = [];
+    if (marker.dataset.duration) statParts.push(formatDuration(parseInt(marker.dataset.duration)));
+    if (marker.dataset.turns) statParts.push(marker.dataset.turns + ' turns');
+    if (marker.dataset.cost) statParts.push(formatCost(parseFloat(marker.dataset.cost)));
+
+    const group = document.createElement('div');
+    group.className = 'session-group';
+    group.dataset.msgIdx = nodes[0].dataset.msgIdx;
+    const toggle = document.createElement('div');
+    toggle.className = 'session-toggle';
+    toggle.innerHTML = '<span class="session-summary">' + esc(summary) + '</span>'
+      + (statParts.length ? '<span class="session-stats">' + statParts.join(' / ') + '</span>' : '');
+    const body = document.createElement('div');
+    body.className = 'session-body';
+    toggle.addEventListener('click', () => body.classList.toggle('open'));
+
+    nodes[0].before(group);
+    for (const node of nodes) body.appendChild(node);
+    group.appendChild(toggle);
+    group.appendChild(body);
+    marker.style.display = 'none';
+  }
+}
+
+let _lastColLayout = '';
+
 function renderGrid() {
   const grid = document.getElementById('grid');
   const workerIds = [...state.workers.keys()].sort((a, b) => a - b);
 
   if (workerIds.length === 0) {
-    grid.style.gridTemplateColumns = '1fr';
-    grid.style.gridTemplateRows = '1fr';
     if (!grid.querySelector('.empty-state')) grid.innerHTML = '<div class="empty-state">// awaiting signal ...</div>';
     return;
   }
 
-  const { cols, rows } = computeGridLayout(workerIds.length);
-  grid.style.gridTemplateColumns = 'repeat(' + cols + ', 1fr)';
-  grid.style.gridTemplateRows = 'repeat(' + rows + ', 1fr)';
+  const numCols = computeColumns(workerIds.length);
+  const columns = distributeToColumns(workerIds, numCols);
+  const layoutKey = workerIds.join(',');
+
+  // Rebuild column structure if layout changed
+  if (layoutKey !== _lastColLayout) {
+    _lastColLayout = layoutKey;
+    // Detach existing cards (preserve DOM state)
+    const detached = new Map();
+    for (const id of workerIds) {
+      const existing = document.getElementById('worker-' + id);
+      if (existing) { existing.remove(); detached.set(id, existing); }
+    }
+    grid.innerHTML = '';
+    for (let c = 0; c < columns.length; c++) {
+      const colEl = document.createElement('div');
+      colEl.className = 'grid-col';
+      colEl.dataset.col = c;
+      for (const id of columns[c]) {
+        let card = detached.get(id);
+        if (!card) {
+          card = document.createElement('div');
+          card.id = 'worker-' + id;
+          card.className = 'worker-card';
+          card.innerHTML = '<div class="worker-header"></div><div class="worker-messages"></div>';
+        }
+        colEl.appendChild(card);
+      }
+      grid.appendChild(colEl);
+    }
+  }
 
   for (const id of workerIds) {
     const ws = state.workers.get(id);
     let card = document.getElementById('worker-' + id);
-    if (!card) {
-      card = document.createElement('div');
-      card.id = 'worker-' + id;
-      card.className = 'worker-card';
-      card.innerHTML = '<div class="worker-header"></div><div class="worker-messages"></div>';
-      grid.appendChild(card);
-    }
 
     const cardStatus = (state.slotInfo.get(id)?.status) || ws.status;
     card.className = 'worker-card ' + cardStatus;
@@ -532,6 +700,14 @@ function renderGrid() {
 
     const msgContainer = card.querySelector('.worker-messages');
     const isAtBottom = msgContainer.scrollHeight - msgContainer.scrollTop - msgContainer.clientHeight < 50;
+
+    // Status transition from active → done: force full rebuild for clean collapse
+    if (ws._lastStatus === 'active' && ws.status !== 'active') {
+      ws._dirtyFrom = 0;
+      ws._renderedCount = 0;
+      msgContainer.innerHTML = '';
+    }
+    ws._lastStatus = ws.status;
 
     const dirtyFrom = ws._dirtyFrom;
 
@@ -574,31 +750,37 @@ function renderGrid() {
       }
     }
 
+    collapseToolGroups(msgContainer);
+    if (ws.status !== 'active') {
+      collapseCompletedSessions(msgContainer);
+    }
+
     if (isAtBottom) {
       msgContainer.scrollTop = msgContainer.scrollHeight;
     }
 
     let footer = card.querySelector('.worker-footer');
-    if (ws.status === 'completed' || ws.status === 'error') {
-      if (!footer) {
-        footer = document.createElement('div');
-        footer.className = 'worker-footer';
-        card.appendChild(footer);
-      }
-      let parts = [];
-      if (ws.duration != null) parts.push(formatDuration(ws.duration));
-      if (ws.turns != null) parts.push('<span class="turns">' + ws.turns + ' turns</span>');
-      if (ws.cost != null) parts.push('<span class="cost">' + formatCost(ws.cost) + '</span>');
-      footer.innerHTML = parts.join('<span style="color:var(--border)"> | </span>');
-    } else if (footer) {
-      footer.remove();
+    if (!footer) {
+      footer = document.createElement('div');
+      footer.className = 'worker-footer';
+      card.appendChild(footer);
     }
+    const parts = [];
+    if (ws.duration != null) {
+      parts.push(formatDuration(ws.duration));
+    } else if (slotInfo?.startedAt) {
+      parts.push(formatDuration(Date.now() - slotInfo.startedAt));
+    }
+    const liveTurns = ws.turns ?? ws.turnCount;
+    if (liveTurns > 0) parts.push('<span class="turns">' + liveTurns + ' turns</span>');
+    if (ws.cost != null) parts.push('<span class="cost">' + formatCost(ws.cost) + '</span>');
+    footer.innerHTML = parts.length > 0 ? parts.join('<span style="color:var(--border)"> | </span>') : '';
   }
 
   const existing = grid.querySelectorAll('.worker-card');
   for (const el of existing) {
     const cardId = parseInt(el.id.replace('worker-', ''), 10);
-    if (!state.workers.has(cardId)) el.remove();
+    if (!state.workers.has(cardId)) { el.remove(); _lastColLayout = ''; }
   }
 }
 
@@ -730,6 +912,8 @@ async function poll() {
           ws.cost = null;
           ws.duration = null;
           ws.turns = null;
+          ws.turnCount = 0;
+          ws._seenMsgIds = new Set();
           ws.resultText = null;
           ws._renderedCount = 0;
           ws._dirtyFrom = 0;
