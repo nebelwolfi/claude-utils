@@ -1,0 +1,779 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ralph Dashboard</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0a0a0b;--surface:#111114;--border:#1e2a1e;--text:#d4d4d8;
+  --muted:#8b8b95;--accent:#00ff41;--card:#0d0d10;--card-hover:#161619;
+  --red:#f87171;--orange:#fbbf24;--green:#00ff41;--purple:#c084fc;
+  --cyan:#22d3ee;--dim:#3f3f46;
+}
+body{font-family:"SFMono-Regular",Consolas,"Liberation Mono",Menlo,monospace;background:var(--bg);color:var(--text);height:100vh;overflow:hidden;position:relative;--header-h:66px}
+body::after{content:"";position:fixed;inset:0;background:repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,255,65,0.015) 2px,rgba(0,255,65,0.015) 4px);pointer-events:none;z-index:9999}
+
+header{padding:10px 20px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:16px;flex-wrap:wrap;background:rgba(0,255,65,0.02)}
+header h1{font-size:14px;font-weight:400;color:var(--accent);text-shadow:0 0 10px rgba(0,255,65,0.5);letter-spacing:2px;text-transform:uppercase}
+header .stats{color:var(--muted);font-size:11px;display:flex;gap:12px}
+header .stats .cost{color:var(--green)}
+
+.ralph-log-toggle{margin-left:auto;padding:3px 10px;background:transparent;border:1px solid var(--border);color:var(--muted);cursor:pointer;font-size:11px;font-family:inherit;text-transform:uppercase;letter-spacing:1px}
+.ralph-log-toggle:hover{border-color:var(--accent);color:var(--accent);box-shadow:0 0 8px rgba(0,255,65,0.2)}
+
+.ralph-log-panel{display:none;border-bottom:1px solid var(--border);max-height:180px;overflow-y:auto;font-size:11px;padding:6px 20px;background:rgba(0,255,65,0.01);line-height:1.6}
+.ralph-log-panel.open{display:block}
+.ralph-log-panel.open~.grid{height:calc(100vh - var(--header-h) - 180px)}
+.ralph-log-panel .log-task{color:var(--cyan)}
+.ralph-log-panel .log-ok{color:var(--green)}
+.ralph-log-panel .log-err{color:var(--red)}
+.ralph-log-panel .log-ts{color:var(--dim)}
+
+.grid{display:grid;gap:4px;padding:4px;height:calc(100vh - var(--header-h));overflow:hidden}
+
+.worker-card{background:var(--surface);border:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden;transition:border-color .3s,box-shadow .3s;min-height:0}
+.worker-card.active{border-color:var(--green);box-shadow:0 0 12px rgba(0,255,65,0.1),inset 0 0 30px rgba(0,255,65,0.02)}
+.worker-card.error{border-color:var(--red);box-shadow:0 0 12px rgba(255,51,51,0.15)}
+.worker-card.completed{border-color:var(--dim)}
+
+.worker-header{padding:6px 10px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;font-size:11px;background:rgba(0,255,65,0.03)}
+.worker-header .wid{color:var(--accent);font-weight:700;text-shadow:0 0 6px rgba(0,255,65,0.4)}
+.worker-header .badge{width:6px;height:6px;border-radius:50%;flex-shrink:0}
+.badge-active{background:var(--green);box-shadow:0 0 8px var(--green);animation:pulse 1.5s infinite}
+.badge-completed{background:var(--dim)}
+.badge-error{background:var(--red);box-shadow:0 0 6px var(--red)}
+.badge-idle{background:var(--border)}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+.worker-header .task-name{color:var(--muted);margin-left:auto;max-width:55%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:10px}
+
+.worker-messages{padding:6px 10px;overflow-y:auto;font-size:11px;line-height:1.5;flex:1;min-height:0}
+*{scrollbar-width:thin;scrollbar-color:var(--accent) transparent}
+*::-webkit-scrollbar{width:1px;height:1px}
+*::-webkit-scrollbar-track{background:transparent}
+*::-webkit-scrollbar-thumb{background:var(--accent)}
+
+.msg-text{color:var(--text);white-space:pre-wrap;word-break:break-word;margin-bottom:2px;padding:2px 0;border-left:2px solid var(--dim);padding-left:8px}
+.msg-tool{color:var(--purple);margin-bottom:1px;font-size:10px;padding:2px 6px;background:rgba(192,132,252,0.06);border-left:2px solid var(--purple);cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.msg-tool:hover{background:rgba(192,132,252,0.1)}
+.msg-tool-input{display:none;background:rgba(0,0,0,0.3);border-left:2px solid rgba(192,132,252,0.3);padding:4px 8px;margin:0 0 2px;white-space:pre-wrap;word-break:break-word;color:#a78bcc;font-size:10px;max-height:150px;overflow:auto}
+.msg-tool-input.open{display:block}
+.msg-tool-result{margin-bottom:1px;font-size:10px;padding:2px 6px;border-left:2px solid var(--dim);color:var(--muted);cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.msg-tool-result:hover{background:rgba(255,255,255,0.02)}
+.msg-tool-result.error{border-left-color:var(--red);color:var(--red)}
+.msg-tool-result-body{display:none;background:rgba(0,0,0,0.3);border-left:2px solid var(--dim);padding:4px 8px;margin:0 0 2px;white-space:pre-wrap;word-break:break-word;color:#9a9aa0;font-size:10px;max-height:200px;overflow:auto}
+.msg-tool-result-body.open{display:block}
+.msg-tool-result.error+.msg-tool-result-body{border-left-color:rgba(248,113,113,0.3);color:#e08080}
+.msg-system{color:var(--dim);font-size:10px;margin-bottom:2px;letter-spacing:1px;text-transform:uppercase}
+.msg-thinking{color:var(--muted);font-style:italic;margin-bottom:1px;font-size:10px;padding:2px 6px;border-left:2px solid var(--dim);background:rgba(255,255,255,0.01);cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.msg-thinking:hover{background:rgba(255,255,255,0.03)}
+.msg-thinking-body{display:none;background:rgba(0,0,0,0.25);border-left:2px solid var(--dim);padding:4px 8px;margin:0 0 2px;white-space:pre-wrap;word-break:break-word;color:#78787f;font-size:10px;font-style:italic;max-height:200px;overflow:auto}
+.msg-thinking-body.open{display:block}
+.msg-agent-box{border:1px solid var(--cyan);background:rgba(34,211,238,0.03);margin:4px 0;padding:0;overflow:hidden}
+.msg-agent-header{font-size:10px;padding:3px 8px;color:var(--cyan);background:rgba(34,211,238,0.06);border-bottom:1px solid rgba(34,211,238,0.15);display:flex;align-items:center;gap:6px}
+.msg-agent-header .agent-badge{width:5px;height:5px;border-radius:50%;background:var(--cyan);box-shadow:0 0 6px var(--cyan);flex-shrink:0}
+.msg-agent-header .agent-badge.done{background:var(--dim);box-shadow:none}
+.msg-agent-header .agent-stats{margin-left:auto;color:var(--muted);font-size:9px}
+.msg-agent-body{padding:4px 8px;font-size:10px;max-height:120px;overflow-y:auto}
+.msg-agent-body .agent-step{color:var(--muted);padding:1px 0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.msg-error{color:var(--red)}
+
+.code-block{background:rgba(0,0,0,0.5);border:1px solid var(--border);padding:4px 8px;margin:2px 0;overflow-x:auto;font-size:10px;color:var(--cyan)}
+.inline-code{background:rgba(0,0,0,0.4);padding:1px 4px;font-size:10px;color:var(--cyan)}
+
+.worker-footer{padding:6px 10px;border-top:1px solid var(--border);font-size:10px;color:var(--muted);display:flex;gap:12px;background:rgba(0,255,65,0.02)}
+.worker-footer .cost{color:var(--green);text-shadow:0 0 6px rgba(0,255,65,0.3)}
+.worker-footer .turns{color:var(--cyan)}
+
+.empty-state{text-align:center;padding:80px 20px;color:var(--muted);font-size:12px;letter-spacing:2px;text-transform:uppercase}
+
+.control-bar{padding:6px 20px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:16px;font-size:11px;background:rgba(0,255,65,0.01)}
+.control-group{display:flex;align-items:center;gap:4px}
+.control-label{color:var(--dim);text-transform:uppercase;letter-spacing:1px;font-size:9px;margin-right:4px}
+.ctrl-btn{background:transparent;border:1px solid var(--border);color:var(--muted);cursor:pointer;font-family:inherit;font-size:10px;padding:1px 6px;line-height:1.4}
+.ctrl-btn:hover{border-color:var(--accent);color:var(--accent)}
+.ctrl-btn.danger:hover{border-color:var(--red);color:var(--red)}
+.ctrl-btn.resume{color:var(--orange);border-color:var(--orange)}
+.ctrl-btn.resume:hover{color:var(--accent);border-color:var(--accent)}
+.worker-controls{margin-left:auto;display:flex;gap:2px}
+
+.badge-rate_limited{background:var(--orange);box-shadow:0 0 6px var(--orange);animation:pulse 1.5s infinite}
+.badge-paused{background:var(--purple);box-shadow:0 0 4px var(--purple)}
+.worker-card.rate_limited{border-color:var(--orange);box-shadow:0 0 12px rgba(251,191,36,0.15)}
+.worker-card.paused{border-color:var(--purple);box-shadow:0 0 8px rgba(192,132,252,0.1)}
+
+.queue-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:100;justify-content:center;align-items:flex-start;padding-top:60px}
+.queue-overlay.open{display:flex}
+.queue-panel{background:var(--surface);border:1px solid var(--border);width:500px;max-height:70vh;display:flex;flex-direction:column;overflow:hidden}
+.queue-header{padding:8px 12px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;font-size:12px;color:var(--accent)}
+.queue-add{padding:6px 12px;border-bottom:1px solid var(--border);display:flex;gap:4px}
+.queue-add input{flex:1;background:var(--bg);border:1px solid var(--border);color:var(--text);font-family:inherit;font-size:11px;padding:4px 8px}
+.queue-add input:focus{outline:none;border-color:var(--accent)}
+.queue-list{overflow-y:auto;flex:1;padding:4px}
+.queue-item{display:flex;align-items:center;gap:6px;padding:4px 8px;font-size:11px;border-bottom:1px solid rgba(255,255,255,0.03)}
+.queue-item .qi-task{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text)}
+.queue-item .qi-status{color:var(--dim);font-size:9px;text-transform:uppercase}
+.queue-item .qi-remove{cursor:pointer;color:var(--dim);font-size:10px}
+.queue-item .qi-remove:hover{color:var(--red)}
+</style>
+</head>
+<body>
+<header>
+  <h1>// ralph dashboard</h1>
+  <div class="stats" id="stats"></div>
+  <button class="ralph-log-toggle" id="log-toggle" onclick="toggleRalphLog()">ralph.log</button>
+</header>
+<div class="control-bar" id="control-bar">
+  <div class="control-group">
+    <span class="control-label">workers</span>
+    <button class="ctrl-btn" onclick="scaleWorkers(-1)">-</button>
+    <span id="worker-count" style="color:var(--accent);min-width:14px;text-align:center">0</span>
+    <button class="ctrl-btn" onclick="scaleWorkers(1)">+</button>
+  </div>
+  <div class="control-group">
+    <span class="control-label">queue</span>
+    <span id="queue-count" style="color:var(--cyan)">0</span>
+    <button class="ctrl-btn" onclick="toggleQueue()">manage</button>
+  </div>
+  <div class="control-group">
+    <span class="control-label">mode</span>
+    <span id="mode-value" style="color:var(--muted)">--</span>
+  </div>
+</div>
+<div class="ralph-log-panel" id="ralph-log-panel"></div>
+<div class="grid" id="grid"></div>
+
+<div class="queue-overlay" id="queue-overlay" onclick="if(event.target===this)toggleQueue()">
+  <div class="queue-panel">
+    <div class="queue-header">
+      <span>// task queue</span>
+      <button class="ctrl-btn" onclick="toggleQueue()">X</button>
+    </div>
+    <div class="queue-add">
+      <input id="new-task-input" placeholder="add task..." onkeydown="if(event.key==='Enter')addTask()">
+      <button class="ctrl-btn" onclick="addTask()">+</button>
+    </div>
+    <div class="queue-list" id="queue-list"></div>
+  </div>
+</div>
+
+<script>
+const API = '/api';
+
+const state = {
+  workers: new Map(),
+  ralphLogOffset: 0,
+  ralphLogLines: [],
+  workerTasks: new Map(),
+  totalCost: 0,
+  slotInfo: new Map(),
+  dashState: null,
+};
+
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+function renderText(text) {
+  let html = esc(text);
+  html = html.replace(/```(\w*)\n([\s\S]*?)```/g, '<pre class="code-block"><code>$2</code></pre>');
+  html = html.replace(/`([^`]+)`/g, '<code class="inline-code">$1</code>');
+  return html;
+}
+
+function formatDuration(ms) {
+  if (ms < 1000) return ms + 'ms';
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return s + 's';
+  const m = Math.floor(s / 60);
+  const rem = s % 60;
+  return m + 'm ' + rem + 's';
+}
+
+function formatCost(usd) {
+  if (usd == null) return '';
+  return '$' + usd.toFixed(4);
+}
+
+function getWorkerState(id) {
+  if (!state.workers.has(id)) {
+    state.workers.set(id, {
+      id,
+      offset: 0,
+      partialLine: '',
+      messages: [],
+      lastMessageId: null,
+      status: 'idle',
+      cost: null,
+      duration: null,
+      turns: null,
+      resultText: null,
+      _renderedCount: 0,
+      _dirtyFrom: 0,
+    });
+  }
+  return state.workers.get(id);
+}
+
+function processJsonlLines(workerId, rawData) {
+  const ws = getWorkerState(workerId);
+  const text = ws.partialLine + rawData;
+  const lines = text.split('\n');
+
+  ws.partialLine = text.endsWith('\n') ? '' : lines.pop();
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    let event;
+    try { event = JSON.parse(trimmed); } catch { continue; }
+    processEvent(ws, event);
+  }
+}
+
+function toolUseSummary(block) {
+  let summary = block.name;
+  const inp = block.input;
+  if (inp) {
+    if (inp.command) summary += ' $ ' + inp.command;
+    else if (inp.file_path) summary += ' -> ' + inp.file_path;
+    else if (inp.pattern) summary += ' /' + inp.pattern + '/';
+    else if (inp.query) summary += ' ? ' + inp.query;
+    else if (inp.description) summary += ' : ' + inp.description;
+    else if (inp.prompt) summary += ' : ' + (inp.prompt.length > 80 ? inp.prompt.slice(0, 80) + '...' : inp.prompt);
+  }
+  return summary;
+}
+
+function processAssistantContent(ws, content, msgId) {
+  for (const block of content) {
+    if (block.type === 'thinking') {
+      const text = block.thinking || '';
+      if (text.length > 0) {
+        ws.messages.push({ kind: 'thinking', text, msgId });
+      }
+    } else if (block.type === 'text') {
+      ws.messages.push({ kind: 'text', text: block.text, msgId });
+    } else if (block.type === 'tool_use') {
+      const inputStr = typeof block.input === 'string' ? block.input : JSON.stringify(block.input, null, 2);
+      ws.messages.push({ kind: 'tool', name: block.name, summary: toolUseSummary(block), detail: inputStr, msgId, toolUseId: block.id });
+    }
+  }
+}
+
+function processEvent(ws, event) {
+  if (event.type === 'stream_event' || event.type === 'rate_limit_event') return;
+
+  if (event.type === 'system') {
+    if (event.subtype === 'init') {
+      ws.status = 'active';
+      ws.messages.push({ kind: 'system', text: '> session init' + (event.model ? ' [' + event.model + ']' : '') });
+    } else if (event.subtype === 'task_started') {
+      // Remove the tool_use message that spawned this agent
+      const toolIdx = ws.messages.findLastIndex(m => m.kind === 'tool' && m.toolUseId === event.tool_use_id);
+      if (toolIdx >= 0) {
+        ws.messages.splice(toolIdx, 1);
+        ws._dirtyFrom = Math.min(ws._dirtyFrom, toolIdx);
+      }
+      ws.messages.push({
+        kind: 'agent', taskId: event.task_id,
+        toolUseId: event.tool_use_id,
+        description: event.description || 'agent',
+        taskType: event.task_type || 'unknown',
+        steps: [],
+        usage: null,
+        done: false,
+      });
+    } else if (event.subtype === 'task_progress') {
+      const existing = ws.messages.findLast(m => m.kind === 'agent' && m.taskId === event.task_id);
+      if (existing) {
+        const stepText = (event.description || '') + (event.last_tool_name ? ' [' + event.last_tool_name + ']' : '');
+        existing.steps.push(stepText);
+        if (existing.steps.length > 50) existing.steps.splice(0, existing.steps.length - 50);
+        existing.usage = event.usage;
+      }
+    } else if (event.subtype === 'task_complete' || event.subtype === 'task_result') {
+      const existing = ws.messages.findLast(m => m.kind === 'agent' && m.taskId === event.task_id);
+      if (existing) existing.done = true;
+    }
+  } else if (event.type === 'assistant' && event.message) {
+    ws.status = 'active';
+    const msg = event.message;
+    const msgId = msg.id;
+
+    if (msgId && msgId === ws.lastMessageId) {
+      while (ws.messages.length > 0 && ws.messages[ws.messages.length - 1].msgId === msgId) {
+        ws.messages.pop();
+      }
+      ws._dirtyFrom = Math.min(ws._dirtyFrom, ws.messages.length);
+    }
+    ws.lastMessageId = msgId;
+    processAssistantContent(ws, msg.content || [], msgId);
+  } else if (event.type === 'user' && event.message) {
+    const content = event.message.content || [];
+    for (const block of content) {
+      if (block.type === 'tool_result') {
+        // Check if this closes a sub-agent
+        const agent = ws.messages.findLast(m => m.kind === 'agent' && m.toolUseId === block.tool_use_id);
+        if (agent) {
+          agent.done = true;
+          continue;
+        }
+        let contentText = '';
+        if (typeof block.content === 'string') {
+          contentText = block.content;
+        } else if (Array.isArray(block.content)) {
+          contentText = block.content.map(c => c.text || '').join('\n');
+        }
+        const isError = block.is_error === true;
+        ws.messages.push({ kind: 'tool_result', detail: contentText, isError });
+      }
+    }
+  } else if (event.type === 'result') {
+    ws.status = event.subtype === 'success' ? 'completed' : 'error';
+    ws.cost = event.cost_usd;
+    ws.duration = event.duration_ms;
+    ws.turns = event.num_turns;
+    ws.resultText = event.result;
+    ws.lastMessageId = null;
+  }
+
+  if (ws.messages.length > 500) {
+    ws.messages.splice(0, ws.messages.length - 500);
+    ws._dirtyFrom = 0;
+  }
+}
+
+function processRalphLog(rawData) {
+  const lines = rawData.split('\n');
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    state.ralphLogLines.push(trimmed);
+
+    const m = trimmed.match(/^\[(.+?)\] Worker (\d+) - (.+)$/);
+    if (m) {
+      const workerId = parseInt(m[2], 10);
+      const eventText = m[3];
+      const taskMatch = eventText.match(/^Task:\s*(.+?)(?:\s*\(stream:.*\))?$/);
+      if (taskMatch) {
+        state.workerTasks.set(workerId, taskMatch[1]);
+      }
+    }
+  }
+  if (state.ralphLogLines.length > 500) {
+    state.ralphLogLines.splice(0, state.ralphLogLines.length - 500);
+  }
+}
+
+let _ralphLogRendered = 0;
+function renderRalphLog() {
+  const panel = document.getElementById('ralph-log-panel');
+  const lines = state.ralphLogLines;
+  for (let i = _ralphLogRendered; i < lines.length; i++) {
+    const line = lines[i];
+    const div = document.createElement('div');
+    const m = line.match(/^\[(.+?)\] (.+)$/);
+    if (!m) { div.textContent = line; }
+    else {
+      let cls = '';
+      if (m[2].includes('Task:')) cls = 'log-task';
+      else if (m[2].includes('exit=0') || m[2].includes('TASK_COMPLETE')) cls = 'log-ok';
+      else if (m[2].includes('ERROR') || m[2].includes('exit=1')) cls = 'log-err';
+      div.innerHTML = '<span class="log-ts">[' + esc(m[1]) + ']</span> <span class="' + cls + '">' + esc(m[2]) + '</span>';
+    }
+    panel.appendChild(div);
+  }
+  if (lines.length > _ralphLogRendered) panel.scrollTop = panel.scrollHeight;
+  _ralphLogRendered = lines.length;
+}
+
+function computeGridLayout(n) {
+  if (n <= 1) return { cols: 1, rows: 1 };
+  if (n === 2) return { cols: 2, rows: 1 };
+  if (n === 3) return { cols: 3, rows: 1 };
+  if (n === 4) return { cols: 2, rows: 2 };
+  const cols = Math.ceil(Math.sqrt(n));
+  const rows = Math.ceil(n / cols);
+  return { cols, rows };
+}
+
+function renderMessage(msg, container) {
+  if (msg.kind === 'system') {
+    const div = document.createElement('div');
+    div.className = 'msg-system';
+    div.textContent = msg.text;
+    container.appendChild(div);
+  } else if (msg.kind === 'thinking') {
+    const preview = msg.text.length > 100 ? msg.text.slice(0, 100) + '...' : msg.text;
+    const label = document.createElement('div');
+    label.className = 'msg-thinking';
+    label.textContent = '// ' + preview.replace(/\n/g, ' ');
+    const body = document.createElement('div');
+    body.className = 'msg-thinking-body';
+    body.textContent = msg.text;
+    label.addEventListener('click', () => body.classList.toggle('open'));
+    container.appendChild(label);
+    container.appendChild(body);
+  } else if (msg.kind === 'text') {
+    const div = document.createElement('div');
+    div.className = 'msg-text';
+    div.innerHTML = renderText(msg.text);
+    container.appendChild(div);
+  } else if (msg.kind === 'tool') {
+    const label = document.createElement('div');
+    label.className = 'msg-tool';
+    label.textContent = '> ' + msg.summary;
+    const body = document.createElement('div');
+    body.className = 'msg-tool-input';
+    body.textContent = msg.detail;
+    label.addEventListener('click', () => { body.classList.toggle('open'); if (label._resultBody) label._resultBody.classList.toggle('open'); });
+    container.appendChild(label);
+    container.appendChild(body);
+  } else if (msg.kind === 'tool_result') {
+    if (msg.detail) {
+      const body = document.createElement('div');
+      body.className = 'msg-tool-result-body';
+      body.textContent = msg.detail;
+      // find the preceding tool label and wire it up
+      let el = container.lastElementChild;
+      while (el) {
+        if (el.classList.contains('msg-tool')) { el._resultBody = body; break; }
+        if (el.classList.contains('msg-tool-input')) { el = el.previousElementSibling; continue; }
+        break;
+      }
+      container.appendChild(body);
+    }
+  } else if (msg.kind === 'agent') {
+    const box = document.createElement('div');
+    box.className = 'msg-agent-box';
+    box.dataset.taskId = msg.taskId;
+    renderAgentInner(msg, box);
+    container.appendChild(box);
+  }
+}
+
+function renderAgentInner(msg, box) {
+  box.innerHTML = '';
+  const hdr = document.createElement('div');
+  hdr.className = 'msg-agent-header';
+  const badgeCls = msg.done ? 'agent-badge done' : 'agent-badge';
+  let statsHtml = '';
+  if (msg.usage) {
+    const parts = [];
+    if (msg.usage.tool_uses) parts.push(msg.usage.tool_uses + ' tools');
+    if (msg.usage.duration_ms) parts.push(formatDuration(msg.usage.duration_ms));
+    statsHtml = '<span class="agent-stats">' + parts.join(' / ') + '</span>';
+  }
+  hdr.innerHTML = '<span class="' + badgeCls + '"></span>' + esc(msg.description) + statsHtml;
+  box.appendChild(hdr);
+  if (msg.steps.length > 0) {
+    const body = document.createElement('div');
+    body.className = 'msg-agent-body';
+    for (const step of msg.steps) {
+      const s = document.createElement('div');
+      s.className = 'agent-step';
+      s.textContent = step;
+      body.appendChild(s);
+    }
+    box.appendChild(body);
+    body.scrollTop = body.scrollHeight;
+  }
+}
+
+function renderGrid() {
+  const grid = document.getElementById('grid');
+  const workerIds = [...state.workers.keys()].sort((a, b) => a - b);
+
+  if (workerIds.length === 0) {
+    grid.style.gridTemplateColumns = '1fr';
+    grid.style.gridTemplateRows = '1fr';
+    if (!grid.querySelector('.empty-state')) grid.innerHTML = '<div class="empty-state">// awaiting signal ...</div>';
+    return;
+  }
+
+  const { cols, rows } = computeGridLayout(workerIds.length);
+  grid.style.gridTemplateColumns = 'repeat(' + cols + ', 1fr)';
+  grid.style.gridTemplateRows = 'repeat(' + rows + ', 1fr)';
+
+  for (const id of workerIds) {
+    const ws = state.workers.get(id);
+    let card = document.getElementById('worker-' + id);
+    if (!card) {
+      card = document.createElement('div');
+      card.id = 'worker-' + id;
+      card.className = 'worker-card';
+      card.innerHTML = '<div class="worker-header"></div><div class="worker-messages"></div>';
+      grid.appendChild(card);
+    }
+
+    const cardStatus = (state.slotInfo.get(id)?.status) || ws.status;
+    card.className = 'worker-card ' + cardStatus;
+
+    const header = card.querySelector('.worker-header');
+    const slotInfo = state.slotInfo.get(id);
+    const slotStatus = slotInfo ? slotInfo.status : ws.status;
+    const badgeClass = 'badge-' + slotStatus;
+    const taskName = state.workerTasks.get(id) || (slotInfo ? slotInfo.task : '') || '';
+    const isPaused = slotInfo && slotInfo.paused;
+    const isResumable = slotStatus === 'rate_limited' || slotStatus === 'error';
+    let ctrlHtml = '<span class="worker-controls">';
+    if (isResumable) ctrlHtml += '<button class="ctrl-btn resume" onclick="event.stopPropagation();resumeTask(' + id + ')" title="Resume">R</button>';
+    ctrlHtml += '<button class="ctrl-btn" onclick="event.stopPropagation();togglePause(' + id + ')" title="' + (isPaused ? 'Unpause' : 'Pause') + '">' + (isPaused ? '>' : '||') + '</button>';
+    ctrlHtml += '<button class="ctrl-btn danger" onclick="event.stopPropagation();killWorker(' + id + ')" title="Kill">X</button>';
+    ctrlHtml += '</span>';
+    header.innerHTML = '<span class="badge ' + badgeClass + '"></span>'
+      + '<span class="wid">W' + id + '</span>'
+      + (taskName ? '<span class="task-name" title="' + esc(taskName) + '">' + esc(taskName) + '</span>' : '')
+      + ctrlHtml;
+
+    const msgContainer = card.querySelector('.worker-messages');
+    const isAtBottom = msgContainer.scrollHeight - msgContainer.scrollTop - msgContainer.clientHeight < 50;
+
+    const dirtyFrom = ws._dirtyFrom;
+
+    // Remove DOM children from dirtyFrom onward
+    if (dirtyFrom < ws._renderedCount) {
+      // Count DOM nodes to remove: each message may create 1-3 nodes
+      // Easiest: track node count per message index via data attributes
+      // Simpler: each message wrapper gets a data-idx, remove from dirtyFrom
+      const children = [...msgContainer.children];
+      let removeFrom = 0;
+      for (let i = 0; i < children.length; i++) {
+        const idx = parseInt(children[i].dataset.msgIdx ?? '-1', 10);
+        if (idx >= dirtyFrom) { removeFrom = i; break; }
+        if (i === children.length - 1) removeFrom = children.length;
+      }
+      while (msgContainer.children.length > removeFrom) {
+        msgContainer.removeChild(msgContainer.lastChild);
+      }
+      ws._renderedCount = dirtyFrom;
+    }
+
+    // Render new messages from _renderedCount onward
+    for (let i = ws._renderedCount; i < ws.messages.length; i++) {
+      const msg = ws.messages[i];
+      const beforeCount = msgContainer.children.length;
+      renderMessage(msg, msgContainer);
+      // Tag all new nodes with the message index
+      for (let j = beforeCount; j < msgContainer.children.length; j++) {
+        msgContainer.children[j].dataset.msgIdx = i;
+      }
+    }
+    ws._renderedCount = ws.messages.length;
+    ws._dirtyFrom = ws.messages.length;
+
+    // Update agent boxes in place (they mutate: steps, usage, done)
+    for (const msg of ws.messages) {
+      if (msg.kind === 'agent') {
+        const box = msgContainer.querySelector('[data-task-id="' + msg.taskId + '"]');
+        if (box) renderAgentInner(msg, box);
+      }
+    }
+
+    if (isAtBottom) {
+      msgContainer.scrollTop = msgContainer.scrollHeight;
+    }
+
+    let footer = card.querySelector('.worker-footer');
+    if (ws.status === 'completed' || ws.status === 'error') {
+      if (!footer) {
+        footer = document.createElement('div');
+        footer.className = 'worker-footer';
+        card.appendChild(footer);
+      }
+      let parts = [];
+      if (ws.duration != null) parts.push(formatDuration(ws.duration));
+      if (ws.turns != null) parts.push('<span class="turns">' + ws.turns + ' turns</span>');
+      if (ws.cost != null) parts.push('<span class="cost">' + formatCost(ws.cost) + '</span>');
+      footer.innerHTML = parts.join('<span style="color:var(--border)"> | </span>');
+    } else if (footer) {
+      footer.remove();
+    }
+  }
+
+  const existing = grid.querySelectorAll('.worker-card');
+  for (const el of existing) {
+    const cardId = parseInt(el.id.replace('worker-', ''), 10);
+    if (!state.workers.has(cardId)) el.remove();
+  }
+}
+
+function renderStats() {
+  const statsEl = document.getElementById('stats');
+  const workers = [...state.workers.values()];
+  const total = workers.length;
+  const active = workers.filter(w => w.status === 'active').length;
+  const completed = workers.filter(w => w.status === 'completed').length;
+  const errors = workers.filter(w => w.status === 'error').length;
+  const totalCost = workers.reduce((sum, w) => sum + (w.cost || 0), 0);
+
+  let parts = [];
+  if (total > 0) parts.push(total + ' nodes');
+  if (active > 0) parts.push('<span style="color:var(--green);text-shadow:0 0 6px rgba(0,255,65,0.4)">' + active + ' live</span>');
+  if (completed > 0) parts.push('<span style="color:var(--dim)">' + completed + ' done</span>');
+  if (errors > 0) parts.push('<span style="color:var(--red)">' + errors + ' err</span>');
+  if (totalCost > 0) parts.push('<span class="cost" style="text-shadow:0 0 6px rgba(0,255,65,0.3)">' + formatCost(totalCost) + '</span>');
+  statsEl.innerHTML = parts.join('<span style="color:var(--border);margin:0 4px">//</span>');
+}
+
+function toggleRalphLog() {
+  document.getElementById('ralph-log-panel').classList.toggle('open');
+}
+
+// ─── Control API ───
+async function ctrlPost(path) {
+  try {
+    const res = await fetch(API + path, { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+    return await res.json();
+  } catch (e) { console.error('Control error:', e); }
+}
+
+async function scaleWorkers(delta) {
+  const current = state.dashState?.config?.workers || state.workers.size;
+  const target = Math.max(1, current + delta);
+  await fetch(API + '/workers/scale', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ count: target }),
+  });
+}
+
+async function killWorker(id) { await ctrlPost('/worker/' + id + '/kill'); }
+async function resumeTask(id) { await ctrlPost('/worker/' + id + '/resume-task'); }
+async function togglePause(id) {
+  const info = state.slotInfo.get(id);
+  const path = info && info.paused ? '/unpause' : '/pause';
+  await ctrlPost('/worker/' + id + path);
+}
+
+function toggleQueue() {
+  document.getElementById('queue-overlay').classList.toggle('open');
+}
+
+async function addTask() {
+  const input = document.getElementById('new-task-input');
+  const task = input.value.trim();
+  if (!task) return;
+  await fetch(API + '/queue/add', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ task }),
+  });
+  input.value = '';
+}
+
+async function removeTask(index) {
+  await fetch(API + '/queue/remove', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ index }),
+  });
+}
+
+function renderQueuePanel() {
+  const list = document.getElementById('queue-list');
+  const queue = state.dashState?.taskQueue || [];
+  list.innerHTML = '';
+  queue.forEach((item, i) => {
+    const div = document.createElement('div');
+    div.className = 'queue-item';
+    div.innerHTML = '<span class="qi-status">' + esc(item.status) + '</span>'
+      + '<span class="qi-task" title="' + esc(item.task) + '">' + esc(item.task) + '</span>'
+      + (item.status === 'queued' ? '<span class="qi-remove" onclick="removeTask(' + i + ')">X</span>' : '');
+    list.appendChild(div);
+  });
+}
+
+function updateControlPanel(data) {
+  state.dashState = data;
+  document.getElementById('worker-count').textContent = data.config?.workers || 0;
+  document.getElementById('mode-value').textContent = data.mode || '--';
+  const queuedCount = (data.taskQueue || []).filter(t => t.status === 'queued').length;
+  document.getElementById('queue-count').textContent = queuedCount;
+  // Update slot info map
+  state.slotInfo.clear();
+  for (const w of (data.workers || [])) {
+    state.slotInfo.set(w.slot, w);
+  }
+  renderQueuePanel();
+}
+
+async function poll() {
+  try {
+    const workersResp = await fetch(API + '/workers');
+    const { workers, ralphLogSize } = await workersResp.json();
+
+    if (ralphLogSize > state.ralphLogOffset) {
+      const logResp = await fetch(API + '/ralph-log?offset=' + state.ralphLogOffset);
+      const { data, offset } = await logResp.json();
+      state.ralphLogOffset = offset;
+      if (data) processRalphLog(data);
+    }
+
+    for (const w of workers) {
+      getWorkerState(w.id);
+    }
+
+    const fetches = workers
+      .filter(w => {
+        const ws = getWorkerState(w.id);
+        if (w.size < ws.offset) {
+          ws.offset = 0;
+          ws.partialLine = '';
+          ws.messages = [];
+          ws.lastMessageId = null;
+          ws.status = 'active';
+          ws.cost = null;
+          ws.duration = null;
+          ws.turns = null;
+          ws.resultText = null;
+          ws._renderedCount = 0;
+          ws._dirtyFrom = 0;
+          return true;
+        }
+        return w.size > ws.offset;
+      })
+      .map(async (w) => {
+        const ws = getWorkerState(w.id);
+        const resp = await fetch(API + '/worker/' + w.id + '?offset=' + ws.offset);
+        const { data, offset } = await resp.json();
+        ws.offset = offset;
+        if (data) processJsonlLines(w.id, data);
+      });
+
+    await Promise.all(fetches);
+
+    // Fetch dashboard state for controls
+    try {
+      const stateResp = await fetch(API + '/state');
+      const stateData = await stateResp.json();
+      updateControlPanel(stateData);
+    } catch { /* dashboard state not available (standalone mode) */ }
+
+    renderRalphLog();
+    renderGrid();
+    renderStats();
+  } catch (e) {
+    console.error('Poll error:', e);
+  }
+}
+
+poll();
+
+// SSE for instant updates, with polling fallback
+let pollTimer = setInterval(poll, 5000);
+try {
+  const es = new EventSource(API + '/events');
+  es.onmessage = (e) => {
+    if (e.data === 'change') poll();
+  };
+  es.onopen = () => { clearInterval(pollTimer); pollTimer = setInterval(poll, 10000); };
+  es.onerror = () => { clearInterval(pollTimer); pollTimer = setInterval(poll, 2000); };
+} catch { /* SSE not supported, polling fallback */ }
+</script>
+</body>
+</html>

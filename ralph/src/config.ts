@@ -17,6 +17,7 @@ const KNOWN_FLAGS = new Set([
   "cleanup", "merge-only", "local", "base-branch", "project-dir",
   "docker", "docker-image", "task-file", "task-command", "prompt-template",
   "clone-dir", "use-clones", "model", "docker-mount",
+  "dashboard-port", "no-dashboard", "auto-resume", "max-continuations",
 ]);
 
 function printHelp(): never {
@@ -52,7 +53,11 @@ Options:
   --skip-build                 Skip cmake configure step
   --local                      Run entirely locally (no pushes, PRs, or gh calls)
   --base-branch NAME           Base branch (default: auto-detect)
-  --project-dir PATH           Project directory (default: cwd)`);
+  --project-dir PATH           Project directory (default: cwd)
+  --dashboard-port PORT        Dashboard port (default: 3100)
+  --no-dashboard               Disable the web dashboard
+  --auto-resume                Automatically resume workers on rate limit / usage limit
+  --max-continuations N        Max resume attempts per task (default: 3)`);
   process.exit(0);
 }
 
@@ -156,6 +161,10 @@ export function parseArgs(argv: string[]): Config {
     cloneDir: str("clone-dir", ""),
     useClones: bool("use-clones") || docker,
     model: str("model", "claude-opus-4-6"),
+    dashboardPort: num("dashboard-port", 3100),
+    noDashboard: bool("no-dashboard"),
+    autoResume: bool("auto-resume"),
+    maxContinuations: num("max-continuations", 3),
     dockerMounts: (() => {
       // Collect all --docker-mount flags from CLI
       const mounts: string[] = [];

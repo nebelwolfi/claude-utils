@@ -2,7 +2,7 @@ import { spawn, execFileSync, execFile } from "node:child_process";
 import { appendFileSync, writeFileSync, readFileSync, existsSync, createWriteStream, copyFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { ChildProcess } from "node:child_process";
-import type { WorkerResult, WorkerStatus, Config } from "./types.js";
+import type { WorkerResult, WorkerStatus, Config, ExitReason } from "./types.js";
 import { log } from "./logger.js";
 import { gitInDir, isKanbnPath } from "./git.js";
 
@@ -190,7 +190,6 @@ function spawnDocker(
   }
   if (!hostIP) hostIP = "10.0.0.1";
 
-  // Override entrypoint to pass full claude args including streaming flags
   const claudeExe = "C:/Users/ContainerAdministrator/AppData/Roaming/npm/claude.cmd";
   const fullClaudeArgs = claudeArgs ?? ["-p", "--dangerously-skip-permissions"];
 
@@ -203,6 +202,8 @@ function spawnDocker(
     "-e", `CLAUDE_CONFIG_DIR=${containerHome}\\.claude`,
     ...(extraMounts ?? []).flatMap((m) => ["-v", `${m}:C:${m.replace(/^[A-Za-z]:/, "")}:ro`]),
     "-e", `WPT_ROOT=C:/wpt`,
+    "-e", `WPT_IP=${hostIP}`,
+    "-e", "RALPH_HEADLESS=1",
     "--add-host", `web-platform.test:${hostIP}`,
     "--isolation", "process",
     "--entrypoint", claudeExe,
@@ -231,6 +232,25 @@ export function getCustomPrompt(templatePath: string, task: string): string {
 
 function timestamp(): string {
   return new Date().toISOString().replace("T", " ").slice(0, 19);
+}
+
+const RATE_LIMIT_PATTERNS = [
+  /rate.?limit/i,
+  /too many requests/i,
+  /\b429\b/,
+  /usage.?limit/i,
+  /spending.?limit/i,
+  /budget.?exceeded/i,
+  /over.?capacity/i,
+];
+
+export function classifyExitReason(exitCode: number | null, stderrText: string): ExitReason {
+  if (exitCode === 0) return "completed";
+  if (exitCode === 2) return "usage_limit";
+  for (const pattern of RATE_LIMIT_PATTERNS) {
+    if (pattern.test(stderrText)) return "rate_limit";
+  }
+  return "error";
 }
 
 export function spawnWorker(
@@ -395,8 +415,10 @@ export function spawnCustomWorker(
 
       appendFileSync(logFile, `[${timestamp()}] Worker ${workerId} - exit=${exitCode}${errSuffix} (stream: ${streamLog})\n`);
 
+      const exitReason = classifyExitReason(exitCode, stderrText);
+
       if (exitCode !== 0) {
-        resolve({ status: "ERROR", workerId, taskId: task, error: `exit code ${exitCode}` });
+        resolve({ status: "ERROR", workerId, taskId: task, error: `exit code ${exitCode}`, exitReason });
         return;
       }
 
@@ -409,7 +431,7 @@ export function spawnCustomWorker(
         gitInDir(workerDir, "commit", "-m", "auto: save uncommitted changes");
       }
 
-      resolve({ status: "TASK_COMPLETE", workerId, taskId: task });
+      resolve({ status: "TASK_COMPLETE", workerId, taskId: task, exitReason });
     });
 
     child.on("error", (err) => {
@@ -418,4 +440,28 @@ export function spawnCustomWorker(
   });
 
   return { promise, process: child };
+}
+
+export function spawnContinuationWorker(
+  workerId: number,
+  workerDir: string,
+  task: string,
+  originalPrompt: string,
+  logFile: string,
+  baseBranch: string,
+  config: Config,
+): { promise: Promise<WorkerResult>; process: ChildProcess } {
+  const continuationPrompt = `Continue the task you were working on. You were interrupted mid-task.
+
+Check your progress:
+- Run \`git log --oneline -10\` to see what you've already committed
+- Run \`git diff\` and \`git status\` to see uncommitted work
+- Review the task requirements and determine what remains
+
+Then continue from where you left off. Do NOT redo work that's already done.
+
+Original task:
+${originalPrompt}`;
+
+  return spawnCustomWorker(workerId, workerDir, task, continuationPrompt, logFile, baseBranch, config);
 }

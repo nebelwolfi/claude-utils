@@ -5,7 +5,10 @@ import type { ChildProcess } from "node:child_process";
 import type { Config, WorkerResult, OrchestratorState } from "./types.js";
 import { log } from "./logger.js";
 import { execSync as gitExecSync, gitInDir, gitSync, discoverSubmodules } from "./git.js";
-import { spawnCustomWorker, getCustomPrompt } from "./worker.js";
+import { spawnCustomWorker, spawnContinuationWorker, getCustomPrompt, classifyExitReason } from "./worker.js";
+import { DashboardState } from "./dashboard/state.js";
+import { startDashboard } from "./dashboard/server.js";
+import { setDashboardState } from "./logger.js";
 import { publishWorkerResults, createTaskPR, drainPendingPRs } from "./merge.js";
 import {
   newRalphWorktree, initializeSubmodules, patchClaudeMD,
@@ -103,7 +106,25 @@ function setupWorkerClone(
   patchClaudeMD(cloneState, wDir);
 
   if (!config.skipBuild) {
-    configureWorktreeBuild(cloneState, wDir);
+    if (config.docker) {
+      // Configure + build inside a container so paths match the worker's view
+      log(`  Worker ${workerId}: building in container...`);
+      const buildCmd = "cmake -DCMAKE_BUILD_TYPE=Debug -DCMAKE_MAKE_PROGRAM=ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -G Ninja -S . -B cmake-build-debug && cmake --build cmake-build-debug --target html_tests";
+      const { exitCode, stdout } = gitExecSync("docker", [
+        "run", "--rm",
+        "-v", `${wDir}:C:\\worker`,
+        "-w", "C:\\worker",
+        "--isolation", "process",
+        "--entrypoint", "cmd",
+        config.dockerImage,
+        "/c", buildCmd,
+      ]);
+      if (exitCode !== 0) {
+        log(`  Worker ${workerId}: Docker build failed: ${stdout.split("\n").slice(-3).join(" ")}`, "ERROR");
+      }
+    } else {
+      configureWorktreeBuild(cloneState, wDir);
+    }
   }
 
   log(`  Worker ${workerId}: ready`, "OK");
@@ -199,9 +220,21 @@ export async function runTaskQueue(config: Config): Promise<void> {
 
   mkdirSync(logDir, { recursive: true });
 
+  // Dashboard
+  let dashState: DashboardState | null = null;
+  if (!config.noDashboard) {
+    dashState = new DashboardState(config, logDir, "taskqueue");
+    setDashboardState(dashState);
+    startDashboard(dashState, config.dashboardPort);
+  }
+
   const allTasks = loadTasks(config);
   const maxTasks = config.iterationsPerWorker * config.workers;
   const tasks = maxTasks > 0 && maxTasks < allTasks.length ? allTasks.slice(0, maxTasks) : allTasks;
+
+  if (dashState) {
+    for (const t of tasks) dashState.taskQueue.push({ task: t, status: "queued", assignedSlot: null });
+  }
 
   log(`Loaded ${allTasks.length} tasks, processing ${tasks.length}`);
   log(`Isolation: ${useClones ? "full clones" : "worktrees"}`);
@@ -262,16 +295,31 @@ export async function runTaskQueue(config: Config): Promise<void> {
     }
   });
 
-  function launchWorker(slot: number, task: string): ActiveJob {
+  function launchWorker(slot: number, task: string, continuation = false): ActiveJob {
     const wDir = workerDirs.get(slot)!;
     const branchId = switchWorkerToTaskBranch(wDir, task, baseBranch, config.local);
     slotBranchIds.set(slot, branchId);
     state.claimedTasks.set(branchId, slot);
 
     const prompt = getPrompt(config, task);
-    const { promise, process: proc } = spawnCustomWorker(
-      slot, wDir, task, prompt, logFile, baseBranch, config,
-    );
+    const { promise, process: proc } = continuation
+      ? spawnContinuationWorker(slot, wDir, task, prompt, logFile, baseBranch, config)
+      : spawnCustomWorker(slot, wDir, task, prompt, logFile, baseBranch, config);
+
+    dashState?.updateSlot(slot, {
+      status: "active",
+      task,
+      pid: proc.pid ?? null,
+      startedAt: Date.now(),
+      workerDir: wDir,
+    });
+
+    // Mark in dashboard queue
+    if (dashState) {
+      const qi = dashState.taskQueue.find(q => q.task === task && q.status === "queued");
+      if (qi) { qi.status = "active"; qi.assignedSlot = slot; }
+    }
+
     return { promise, process: proc, task };
   }
 
@@ -286,8 +334,78 @@ export async function runTaskQueue(config: Config): Promise<void> {
   }
 
   // Poll loop
-  while (activeJobs.size > 0) {
+  while (activeJobs.size > 0 || queue.length > 0) {
     await new Promise((r) => setTimeout(r, 5000));
+
+    // Process dashboard control commands
+    if (dashState) {
+      for (const cmd of dashState.drainCommands()) {
+        try {
+          switch (cmd.type) {
+            case "kill_worker": {
+              const s = cmd.payload.slot as number;
+              const job = activeJobs.get(s);
+              if (job?.process.pid) { try { treeKill(job.process.pid); } catch { /* */ } }
+              dashState.markCommand(cmd.id, "applied");
+              break;
+            }
+            case "pause_slot": {
+              const s = cmd.payload.slot as number;
+              dashState.updateSlot(s, { paused: true });
+              dashState.markCommand(cmd.id, "applied");
+              break;
+            }
+            case "unpause_slot": {
+              const s = cmd.payload.slot as number;
+              dashState.updateSlot(s, { paused: false });
+              dashState.markCommand(cmd.id, "applied");
+              break;
+            }
+            case "resume_task": {
+              const s = cmd.payload.slot as number;
+              const slotInfo = dashState.getSlot(s);
+              if (slotInfo.task && !activeJobs.has(s) && slotInfo.continuations < config.maxContinuations) {
+                tasksLaunched++;
+                dashState.updateSlot(s, { continuations: slotInfo.continuations + 1 });
+                activeJobs.set(s, launchWorker(s, slotInfo.task, true));
+                log(`[resume #${slotInfo.continuations + 1}] Slot ${s} -> ${slotInfo.task.slice(0, 80)}`);
+              }
+              dashState.markCommand(cmd.id, "applied");
+              break;
+            }
+            case "add_task": {
+              const task = cmd.payload.task as string;
+              queue.push(task);
+              dashState.taskQueue.push({ task, status: "queued", assignedSlot: null });
+              dashState.markCommand(cmd.id, "applied");
+              break;
+            }
+            case "remove_task": {
+              const idx = cmd.payload.index as number;
+              const qi = dashState.taskQueue[idx];
+              if (qi && qi.status === "queued") {
+                const queueIdx = queue.indexOf(qi.task);
+                if (queueIdx >= 0) queue.splice(queueIdx, 1);
+                dashState.taskQueue.splice(idx, 1);
+              }
+              dashState.markCommand(cmd.id, "applied");
+              break;
+            }
+            case "skip_task": {
+              const s = cmd.payload.slot as number;
+              const job = activeJobs.get(s);
+              if (job?.process.pid) { try { treeKill(job.process.pid); } catch { /* */ } }
+              dashState.markCommand(cmd.id, "applied");
+              break;
+            }
+            default:
+              dashState.markCommand(cmd.id, "failed", "unsupported command");
+          }
+        } catch (e) {
+          dashState.markCommand(cmd.id, "failed", e instanceof Error ? e.message : String(e));
+        }
+      }
+    }
 
     for (const [slot, job] of activeJobs) {
       const result = await Promise.race([
@@ -300,10 +418,26 @@ export async function runTaskQueue(config: Config): Promise<void> {
       tasksDone++;
       const branchId = slotBranchIds.get(slot) ?? taskToBranchId(job.task);
       const wDir = workerDirs.get(slot)!;
+      const exitReason = result.exitReason ?? "error";
 
       const color = result.status === "TASK_COMPLETE" ? "OK" :
                     result.status === "NO_COMMITS" ? "WARN" : "ERROR";
-      log(`[done ${tasksDone}/${tasksLaunched}] Slot ${slot}: ${result.taskId.slice(0, 60)} (${result.status})`, color);
+      log(`[done ${tasksDone}/${tasksLaunched}] Slot ${slot}: ${result.taskId.slice(0, 60)} (${result.status}${exitReason !== "completed" && exitReason !== "error" ? " " + exitReason : ""})`, color);
+
+      // Update dashboard state
+      const slotStatus = exitReason === "rate_limit" || exitReason === "usage_limit" ? "rate_limited" as const
+        : result.status === "TASK_COMPLETE" ? "idle" as const : "error" as const;
+      dashState?.updateSlot(slot, {
+        status: slotStatus,
+        lastExitCode: null,
+        lastExitReason: exitReason,
+      });
+
+      // Update dashboard queue
+      if (dashState) {
+        const qi = dashState.taskQueue.find(q => q.task === job.task && q.status === "active");
+        if (qi) qi.status = result.status === "TASK_COMPLETE" ? "completed" : "failed";
+      }
 
       if (result.status === "TASK_COMPLETE") {
         const published = publishWorkerResults(state, wDir, slot, branchId);
@@ -313,16 +447,36 @@ export async function runTaskQueue(config: Config): Promise<void> {
         }
       }
 
+      // Auto-resume on rate limit
+      if (config.autoResume && (exitReason === "rate_limit" || exitReason === "usage_limit")) {
+        const slotInfo = dashState?.getSlot(slot);
+        const continuations = slotInfo?.continuations ?? 0;
+        if (continuations < config.maxContinuations) {
+          log(`Auto-resuming slot ${slot} (${exitReason}, attempt ${continuations + 1})`, "WARN");
+          dashState?.updateSlot(slot, { continuations: continuations + 1 });
+          tasksLaunched++;
+          activeJobs.set(slot, launchWorker(slot, job.task, true));
+          state.claimedTasks.delete(branchId);
+          continue;
+        }
+      }
+
       state.claimedTasks.delete(branchId);
       activeJobs.delete(slot);
 
-      if (queue.length > 0 && !shuttingDown) {
+      // Check if slot is paused
+      const isPaused = dashState?.getSlot(slot).paused;
+      if (queue.length > 0 && !shuttingDown && !isPaused) {
         const task = queue.shift()!;
         tasksLaunched++;
+        dashState?.updateSlot(slot, { continuations: 0 });
         activeJobs.set(slot, launchWorker(slot, task));
         log(`[${tasksLaunched}] Slot ${slot} -> ${task.slice(0, 80)}`);
       }
     }
+
+    // Break if nothing left
+    if (activeJobs.size === 0 && queue.length === 0) break;
   }
 
   log(`Done: ${tasksDone} tasks completed`, "OK");

@@ -16,7 +16,10 @@ import {
   switchWorktreeToTaskBranch, syncKanbnToWorktree, ensureUnionMergeForProgressTxt,
   stopAllWorkerProcesses, pruneMergedRalphBranches,
 } from "./worktree.js";
-import { spawnWorker } from "./worker.js";
+import { spawnWorker, classifyExitReason } from "./worker.js";
+import { DashboardState } from "./dashboard/state.js";
+import { startDashboard } from "./dashboard/server.js";
+import { setDashboardState } from "./logger.js";
 import { publishWorkerResults, createTaskPR, createPRsForDoneTasks, mergeCleanPR, cleanupBranchAfterMerge, drainPendingPRs, getPendingRalphPRs } from "./merge.js";
 
 function delay(ms: number): Promise<void> {
@@ -121,6 +124,14 @@ export async function runMain(config: Config): Promise<void> {
   mkdirSync(state.worktreeRoot, { recursive: true });
   mkdirSync(state.logDir, { recursive: true });
 
+  // Dashboard
+  let dashState: DashboardState | null = null;
+  if (!config.noDashboard) {
+    dashState = new DashboardState(config, state.logDir, "kanban");
+    setDashboardState(dashState);
+    startDashboard(dashState, config.dashboardPort);
+  }
+
   const activeJobs = new Map<number, ActiveJob>();
   const worktrees = new Map<number, string>();
   const childProcesses = new Set<ChildProcess>();
@@ -222,6 +233,7 @@ export async function runMain(config: Config): Promise<void> {
       child.on("close", () => childProcesses.delete(child));
 
       activeJobs.set(w, { promise, process: child, taskId: claim.taskId, claimedSubTask: claim.claimedSubTask });
+      dashState?.updateSlot(w, { status: "active", task: claim.taskId, pid: child.pid ?? null, startedAt: Date.now(), workerDir: path });
       const subInfo = claim.claimedSubTask ? ` (subtask: ${claim.claimedSubTask})` : "";
       log(`Worker ${w} dispatched on task: ${claim.taskId}${subInfo}`);
     }
@@ -253,12 +265,52 @@ export async function runMain(config: Config): Promise<void> {
           log(`MAIN_REPO on '${currentMain}' instead of '${state.baseBranch}', restoring!`, "ERROR");
           gitSync(state.mainRepo, "checkout", state.baseBranch);
         }
+
+        // Process dashboard commands
+        if (dashState) {
+          for (const cmd of dashState.drainCommands()) {
+            try {
+              switch (cmd.type) {
+                case "kill_worker": {
+                  const s = cmd.payload.slot as number;
+                  const job = activeJobs.get(s);
+                  if (job?.process.pid) {
+                    const tk = await import("tree-kill").then((m) => m.default).catch(() => null);
+                    if (tk) tk(job.process.pid, "SIGTERM"); else job.process.kill("SIGTERM");
+                  }
+                  dashState.markCommand(cmd.id, "applied");
+                  break;
+                }
+                case "pause_slot": {
+                  dashState.updateSlot(cmd.payload.slot as number, { paused: true });
+                  dashState.markCommand(cmd.id, "applied");
+                  break;
+                }
+                case "unpause_slot": {
+                  dashState.updateSlot(cmd.payload.slot as number, { paused: false });
+                  dashState.markCommand(cmd.id, "applied");
+                  break;
+                }
+                default:
+                  dashState.markCommand(cmd.id, "failed", "unsupported in kanban mode");
+              }
+            } catch (e) {
+              dashState.markCommand(cmd.id, "failed", e instanceof Error ? e.message : String(e));
+            }
+          }
+        }
+
         continue;
       }
 
       const { workerId, result } = settled;
       const jobInfo = activeJobs.get(workerId)!;
       activeJobs.delete(workerId);
+
+      const exitReason = result.exitReason ?? (result.status === "TASK_COMPLETE" ? "completed" : "error");
+      const slotStatus = exitReason === "rate_limit" || exitReason === "usage_limit" ? "rate_limited" as const
+        : result.status === "ERROR" ? "error" as const : "idle" as const;
+      dashState?.updateSlot(workerId, { status: slotStatus, lastExitReason: exitReason, pid: null });
 
       const errorDetail = result.error ? ` - ${result.error}` : "";
       log(`Worker ${workerId} finished: ${result.status} (task: ${jobInfo.taskId})${errorDetail}`);
@@ -332,6 +384,7 @@ export async function runMain(config: Config): Promise<void> {
             childProcesses.add(child);
             child.on("close", () => childProcesses.delete(child));
             activeJobs.set(workerId, { promise, process: child, taskId: jobInfo.taskId, claimedSubTask: nextSub });
+            dashState?.updateSlot(workerId, { status: "active", task: jobInfo.taskId, pid: child.pid ?? null, startedAt: Date.now() });
             continue;
           } else if (nextSub) {
             log(`Worker ${workerId} has remaining subtasks but hit iteration budget (${totalIterations} / ${maxIterations})`, "WARN");
@@ -378,6 +431,7 @@ export async function runMain(config: Config): Promise<void> {
                 childProcesses.add(child);
                 child.on("close", () => childProcesses.delete(child));
                 activeJobs.set(workerId, { promise, process: child, taskId: jobInfo.taskId, claimedSubTask: nextSub });
+                dashState?.updateSlot(workerId, { status: "active", task: jobInfo.taskId, pid: child.pid ?? null, startedAt: Date.now() });
                 dispatched = true;
                 advanced = true;
               } else {
@@ -421,6 +475,7 @@ export async function runMain(config: Config): Promise<void> {
               childProcesses.add(child);
               child.on("close", () => childProcesses.delete(child));
               activeJobs.set(workerId, { promise, process: child, taskId: jobInfo.taskId, claimedSubTask: jobInfo.claimedSubTask });
+              dashState?.updateSlot(workerId, { status: "active", task: jobInfo.taskId, pid: child.pid ?? null, startedAt: Date.now() });
               dispatched = true;
             }
           }
@@ -453,6 +508,7 @@ export async function runMain(config: Config): Promise<void> {
             childProcesses.add(child);
             child.on("close", () => childProcesses.delete(child));
             activeJobs.set(workerId, { promise, process: child, taskId: nextClaim.taskId, claimedSubTask: nextClaim.claimedSubTask });
+            dashState?.updateSlot(workerId, { status: "active", task: nextClaim.taskId, pid: child.pid ?? null, startedAt: Date.now(), continuations: 0 });
             const subInfo = nextClaim.claimedSubTask ? ` (subtask: ${nextClaim.claimedSubTask})` : "";
             log(`Worker ${workerId} restarted on task: ${nextClaim.taskId}${subInfo}`);
             dispatched = true;

@@ -23,6 +23,12 @@ export interface Config {
   model: string;
   // Extra host directories to mount read-only into Docker containers
   dockerMounts: string[];
+  // Dashboard
+  dashboardPort: number;
+  noDashboard: boolean;
+  // Resume
+  autoResume: boolean;
+  maxContinuations: number;
 }
 
 export type LogLevel = "INFO" | "ERROR" | "WARN" | "OK";
@@ -53,11 +59,14 @@ export interface ClaimResult {
 
 export type WorkerStatus = "TASK_COMPLETE" | "NO_COMMITS" | "ERROR" | "MERGE_REVIEW_DONE" | "MERGE_REVIEW_ERROR" | "UNKNOWN";
 
+export type ExitReason = "completed" | "error" | "rate_limit" | "usage_limit";
+
 export interface WorkerResult {
   status: WorkerStatus;
   workerId: number;
   taskId: string;
   error?: string;
+  exitReason?: ExitReason;
 }
 
 export interface ActiveJob {

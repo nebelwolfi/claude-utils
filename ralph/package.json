@@ -9,10 +9,11 @@
     "componentType": "cli"
   },
   "bin": {
-    "Ralph-Loop": "dist/index.js"
+    "Ralph-Loop": "dist/index.js",
+    "Ralph-GUI": "dist/gui.js"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && node -e \"require('fs').mkdirSync('dist/dashboard',{recursive:true});require('fs').copyFileSync('src/dashboard/app.html','dist/dashboard/app.html')\"",
     "prepare": "npm run build",
     "start": "node dist/index.js"
   },
