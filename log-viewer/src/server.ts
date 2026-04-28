@@ -10,17 +10,13 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const logDir = process.argv.find((_, i, a) => a[i - 1] === "--dir") ?? process.cwd();
 const startPort = parseInt(process.argv.find((_, i, a) => a[i - 1] === "--port") ?? "3100", 10);
 
-let cachedHtml: string | null = null;
-
 async function getHtml(): Promise<string> {
-  if (cachedHtml) return cachedHtml;
   const htmlPath = join(__dirname, "..", "src", "app.html");
   try {
-    cachedHtml = await readFile(htmlPath, "utf-8");
+    return await readFile(htmlPath, "utf-8");
   } catch {
-    cachedHtml = await readFile(join(__dirname, "app.html"), "utf-8");
+    return await readFile(join(__dirname, "app.html"), "utf-8");
   }
-  return cachedHtml;
 }
 
 function json(res: ServerResponse, data: unknown, status = 200): void {
