@@ -379,12 +379,17 @@ export function spawnCustomWorker(
     child.stdout?.pipe(stream);
 
     const stderrChunks: Buffer[] = [];
-    child.stderr?.on("data", (data) => stderrChunks.push(data));
+    child.stderr?.on("data", (data) => {
+      stderrChunks.push(data);
+      stream.write(data);
+    });
 
     child.on("close", (exitCode) => {
       stream.end();
+      const stderrText = Buffer.concat(stderrChunks).toString("utf-8").trim();
+      const errSuffix = stderrText ? ` | stderr: ${stderrText.split("\n").slice(-3).join(" ")}` : "";
 
-      appendFileSync(logFile, `[${timestamp()}] Worker ${workerId} - exit=${exitCode} (stream: ${streamLog})\n`);
+      appendFileSync(logFile, `[${timestamp()}] Worker ${workerId} - exit=${exitCode}${errSuffix} (stream: ${streamLog})\n`);
 
       if (exitCode !== 0) {
         resolve({ status: "ERROR", workerId, taskId: task, error: `exit code ${exitCode}` });
