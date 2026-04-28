@@ -1,5 +1,5 @@
 import { spawn, execFileSync, execFile } from "node:child_process";
-import { appendFileSync, writeFileSync, readFileSync, existsSync } from "node:fs";
+import { appendFileSync, writeFileSync, readFileSync, existsSync, createWriteStream } from "node:fs";
 import { join } from "node:path";
 import type { ChildProcess } from "node:child_process";
 import type { WorkerResult, WorkerStatus, Config } from "./types.js";
@@ -153,6 +153,7 @@ function spawnDocker(
   imageName: string,
   prompt: string,
   workerDir: string,
+  claudeArgs?: string[],
   wptDir?: string,
 ): ChildProcess {
   // Mount host's .claude dir + .claude.json for credentials/config
@@ -173,6 +174,10 @@ function spawnDocker(
   }
   if (!hostIP) hostIP = "10.0.0.1";
 
+  // Override entrypoint to pass full claude args including streaming flags
+  const claudeExe = "C:/Users/ContainerAdministrator/AppData/Roaming/npm/claude.cmd";
+  const fullClaudeArgs = claudeArgs ?? ["-p", "--dangerously-skip-permissions"];
+
   const args = [
     "run", "--rm", "-i",
     "--name", `ralph-worker-${Date.now()}`,
@@ -181,7 +186,10 @@ function spawnDocker(
     ...(wptDir ? ["-v", `${wptDir}:C:\\wpt:ro`] : []),
     "--add-host", `web-platform.test:${hostIP}`,
     "--isolation", "process",
+    "--entrypoint", claudeExe,
     imageName,
+    ...fullClaudeArgs,
+    "--dangerously-skip-permissions",
     prompt,
   ];
 
@@ -330,31 +338,37 @@ export function spawnCustomWorker(
   baseBranch: string,
   config: Config,
 ): { promise: Promise<WorkerResult>; process: ChildProcess } {
-  appendFileSync(logFile, `[${timestamp()}] Worker ${workerId} - Task: ${task}\n`);
+  const streamLog = join(logFile, "..", `worker-${workerId}.stream.jsonl`);
+  appendFileSync(logFile, `[${timestamp()}] Worker ${workerId} - Task: ${task} (stream: ${streamLog})\n`);
+
+  const claudeArgs = [
+    "--model", claudeModel,
+    "--effort", "high",
+    "--permission-mode", "bypassPermissions",
+    "--output-format", "stream-json",
+    "--include-partial-messages",
+    "-p",
+  ];
 
   let child: ChildProcess;
   if (config.docker) {
-    child = spawnDocker(config.dockerImage, prompt, workerDir);
+    child = spawnDocker(config.dockerImage, prompt, workerDir, claudeArgs);
   } else {
-    child = spawnClaude([
-      "--model", claudeModel,
-      "--effort", "high",
-      "--permission-mode", "bypassPermissions",
-      "-p",
-    ], prompt, workerDir);
+    child = spawnClaude(claudeArgs, prompt, workerDir);
   }
 
   const promise = new Promise<WorkerResult>((resolve) => {
-    const chunks: Buffer[] = [];
-    child.stdout?.on("data", (data) => chunks.push(data));
-    child.stderr?.on("data", (data) => chunks.push(data));
+    // Stream stdout to a live log file
+    const stream = createWriteStream(streamLog, { flags: "w" });
+    child.stdout?.pipe(stream);
+
+    const stderrChunks: Buffer[] = [];
+    child.stderr?.on("data", (data) => stderrChunks.push(data));
 
     child.on("close", (exitCode) => {
-      const resultText = Buffer.concat(chunks).toString("utf-8");
+      stream.end();
 
-      const iterLog = `${logFile}.iter-${new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19)}.txt`;
-      writeFileSync(iterLog, resultText, "utf-8");
-      appendFileSync(logFile, `[${timestamp()}] Worker ${workerId} - exit=${exitCode} (saved to ${iterLog})\n`);
+      appendFileSync(logFile, `[${timestamp()}] Worker ${workerId} - exit=${exitCode} (stream: ${streamLog})\n`);
 
       if (exitCode !== 0) {
         resolve({ status: "ERROR", workerId, taskId: task, error: `exit code ${exitCode}` });
