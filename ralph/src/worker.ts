@@ -205,13 +205,11 @@ function spawnDocker(
     "-e", `WPT_IP=${hostIP}`,
     "-e", "RALPH_HEADLESS=1",
     "-v", `C:\\Windows\\Fonts:C:\\Windows\\Fonts:ro`,
-    "--add-host", `web-platform.test:${hostIP}`,
     "--isolation", "process",
-    "--entrypoint", claudeExe,
+    "--entrypoint", "powershell",
     imageName,
-    ...fullClaudeArgs,
-    "--dangerously-skip-permissions",
-    prompt,
+    "-Command",
+    `Add-Content C:\\Windows\\System32\\drivers\\etc\\hosts '${hostIP} web-platform.test'; & '${claudeExe}' ${[...fullClaudeArgs, "--dangerously-skip-permissions"].map(a => `'${a}'`).join(" ")} '${prompt.replace(/'/g, "''")}'`,
   ];
 
   const child = spawn(resolvedDockerPath, args, {
