@@ -447,18 +447,12 @@ export async function runTaskQueue(config: Config): Promise<void> {
         }
       }
 
-      // Auto-resume on rate limit
-      if (config.autoResume && (exitReason === "rate_limit" || exitReason === "usage_limit")) {
-        const slotInfo = dashState?.getSlot(slot);
-        const continuations = slotInfo?.continuations ?? 0;
-        if (continuations < config.maxContinuations) {
-          log(`Auto-resuming slot ${slot} (${exitReason}, attempt ${continuations + 1})`, "WARN");
-          dashState?.updateSlot(slot, { continuations: continuations + 1 });
-          tasksLaunched++;
-          activeJobs.set(slot, launchWorker(slot, job.task, true));
-          state.claimedTasks.delete(branchId);
-          continue;
-        }
+      // Rate limit: pause the slot, don't move to next task
+      if (exitReason === "rate_limit" || exitReason === "usage_limit") {
+        log(`Slot ${slot} hit ${exitReason} — paused, waiting for manual resume`, "WARN");
+        activeJobs.delete(slot);
+        // Don't delete claimedTasks — keep the branch claimed so resume works
+        continue;
       }
 
       state.claimedTasks.delete(branchId);
@@ -476,7 +470,8 @@ export async function runTaskQueue(config: Config): Promise<void> {
     }
 
     // Break if nothing left
-    if (activeJobs.size === 0 && queue.length === 0) break;
+    const hasRateLimited = dashState ? [...dashState.workers.values()].some(w => w.status === 'rate_limited') : false;
+    if (activeJobs.size === 0 && queue.length === 0 && !hasRateLimited) break;
   }
 
   log(`Done: ${tasksDone} tasks completed`, "OK");

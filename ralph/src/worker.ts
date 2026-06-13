@@ -246,12 +246,13 @@ const RATE_LIMIT_PATTERNS = [
   /resets?\s+\d/i,
 ];
 
-export function classifyExitReason(exitCode: number | null, stderrText: string): ExitReason {
-  if (exitCode === 0) return "completed";
+export function classifyExitReason(exitCode: number | null, stderrText: string, stdoutText?: string): ExitReason {
   if (exitCode === 2) return "usage_limit";
+  const combined = stderrText + (stdoutText ? "\n" + stdoutText : "");
   for (const pattern of RATE_LIMIT_PATTERNS) {
-    if (pattern.test(stderrText)) return "rate_limit";
+    if (pattern.test(combined)) return "rate_limit";
   }
+  if (exitCode === 0) return "completed";
   return "error";
 }
 
@@ -288,7 +289,14 @@ export function spawnWorker(
       const iterLog = `${logFile}.iter-${new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19)}.txt`;
       writeFileSync(iterLog, resultText, "utf-8");
 
-      const exitReason = classifyExitReason(exitCode, stderrText);
+      const stdoutText = Buffer.concat(stdoutChunks).toString("utf-8");
+      const exitReason = classifyExitReason(exitCode, stderrText, stdoutText);
+
+      if (exitReason === "rate_limit" || exitReason === "usage_limit") {
+        appendFileSync(logFile, `[${timestamp()}] Worker ${workerId} - RATE LIMITED (${exitReason}, saved to ${iterLog})\n`);
+        resolve({ status: "ERROR", workerId, taskId, error: exitReason, exitReason });
+        return;
+      }
 
       if (exitCode !== 0) {
         const lastLines = resultText.split("\n").slice(-5).join(" | ").slice(0, 300);
@@ -408,6 +416,14 @@ export function spawnCustomWorker(
     const stream = createWriteStream(streamLog, { flags: "w" });
     child.stdout?.pipe(stream);
 
+    // Buffer tail of stdout for rate limit detection
+    const stdoutTail: Buffer[] = [];
+    child.stdout?.on("data", (data) => {
+      stdoutTail.push(data);
+      // Keep only last ~32KB
+      while (stdoutTail.length > 10) stdoutTail.shift();
+    });
+
     const stderrChunks: Buffer[] = [];
     child.stderr?.on("data", (data) => {
       stderrChunks.push(data);
@@ -417,11 +433,18 @@ export function spawnCustomWorker(
     child.on("close", (exitCode) => {
       stream.end();
       const stderrText = Buffer.concat(stderrChunks).toString("utf-8").trim();
+      const stdoutText = Buffer.concat(stdoutTail).toString("utf-8");
       const errSuffix = stderrText ? ` | stderr: ${stderrText.split("\n").slice(-3).join(" ")}` : "";
 
       appendFileSync(logFile, `[${timestamp()}] Worker ${workerId} - exit=${exitCode}${errSuffix} (stream: ${streamLog})\n`);
 
-      const exitReason = classifyExitReason(exitCode, stderrText);
+      const exitReason = classifyExitReason(exitCode, stderrText, stdoutText);
+
+      if (exitReason === "rate_limit" || exitReason === "usage_limit") {
+        appendFileSync(logFile, `[${timestamp()}] Worker ${workerId} - RATE LIMITED (${exitReason}, stream: ${streamLog})\n`);
+        resolve({ status: "ERROR", workerId, taskId: task, error: exitReason, exitReason });
+        return;
+      }
 
       if (exitCode !== 0) {
         resolve({ status: "ERROR", workerId, taskId: task, error: `exit code ${exitCode}`, exitReason });
