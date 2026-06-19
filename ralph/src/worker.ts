@@ -248,11 +248,10 @@ const RATE_LIMIT_PATTERNS = [
 
 export function classifyExitReason(exitCode: number | null, stderrText: string, stdoutText?: string): ExitReason {
   if (exitCode === 2) return "usage_limit";
-  const combined = stderrText + (stdoutText ? "\n" + stdoutText : "");
-  for (const pattern of RATE_LIMIT_PATTERNS) {
-    if (pattern.test(combined)) return "rate_limit";
-  }
   if (exitCode === 0) return "completed";
+  for (const pattern of RATE_LIMIT_PATTERNS) {
+    if (pattern.test(stderrText)) return "rate_limit";
+  }
   return "error";
 }
 
@@ -266,23 +265,37 @@ export function spawnWorker(
 ): { promise: Promise<WorkerResult>; process: ChildProcess } {
   const prompt = getWorkerPrompt(taskId, claimedSubTask);
 
-  appendFileSync(logFile, `[${timestamp()}] Worker ${workerId} - Running task ${taskId}\n`);
+  // Mirror spawnCustomWorker: write a stream-json file in the log dir so the
+  // dashboard's /api/workers endpoint can detect this worker and stream output.
+  const streamLog = join(logFile, "..", `worker-${workerId}.stream.jsonl`);
+  appendFileSync(logFile, `[${timestamp()}] Worker ${workerId} - Running task ${taskId} (stream: ${streamLog})\n`);
 
   const claudeArgs = [
     "--model", claudeModel,
     "--effort", "high",
     "--permission-mode", "bypassPermissions",
+    "--output-format", "stream-json",
+    "--include-partial-messages",
+    "--verbose",
     "-p",
   ];
   const child = spawnClaude(claudeArgs, prompt, worktreePath, { ...process.env });
 
   const promise = new Promise<WorkerResult>((resolve) => {
+    // Stream stdout to the live log file the dashboard reads.
+    const stream = createWriteStream(streamLog, { flags: "w" });
+    child.stdout?.pipe(stream);
+
     const stdoutChunks: Buffer[] = [];
     const stderrChunks: Buffer[] = [];
     child.stdout?.on("data", (data) => stdoutChunks.push(data));
-    child.stderr?.on("data", (data) => stderrChunks.push(data));
+    child.stderr?.on("data", (data) => {
+      stderrChunks.push(data);
+      stream.write(data);
+    });
 
     child.on("close", (exitCode) => {
+      stream.end();
       const resultText = Buffer.concat([...stdoutChunks, ...stderrChunks]).toString("utf-8");
       const stderrText = Buffer.concat(stderrChunks).toString("utf-8");
 

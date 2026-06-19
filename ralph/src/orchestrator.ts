@@ -351,12 +351,8 @@ export async function runMain(config: Config): Promise<void> {
             log(`Failed to sync claimed subtask to main board: ${claimedSubTask}`, "WARN");
           }
         } else if (claimedSubTask) {
-          // Force-mark subtask complete
-          if (await completeSubTaskInRepo(state.mainRepo, jobInfo.taskId, claimedSubTask)) {
-            log(`Force-marked subtask complete (worker had TASK_COMPLETE but didn't check it off): ${claimedSubTask}`, "WARN");
-          } else {
-            log(`Failed to force-mark subtask; may loop: ${claimedSubTask}`, "ERROR");
-          }
+          state.claimedSubTasks.delete(jobInfo.taskId);
+          log(`Worker had TASK_COMPLETE but didn't check off subtask: ${claimedSubTask} — unclaimed for next worker`, "WARN");
         }
 
         const mainTask = await getTaskJson(state.mainRepo, jobInfo.taskId);
