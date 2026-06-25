@@ -92,6 +92,9 @@ export function configureWorktreeBuild(state: OrchestratorState, worktreePath: s
   }
 
   const buildDir = join(worktreePath, "cmake-build-debug");
+  if (existsSync(buildDir)) {
+    rmSync(buildDir, { recursive: true, force: true });
+  }
   const cmakeDefines: string[] = [];
 
   // Read cmake cache variables and remap paths
@@ -111,7 +114,7 @@ export function configureWorktreeBuild(state: OrchestratorState, worktreePath: s
   }
 
   log("  Configuring cmake build...");
-  const { exitCode, stdout } = execSync("cmake", [
+  const { exitCode, stdout, stderr } = execSync("cmake", [
     "-DCMAKE_BUILD_TYPE=Debug",
     "-DCMAKE_MAKE_PROGRAM=ninja",
     "-DCMAKE_C_COMPILER=clang",
@@ -124,8 +127,9 @@ export function configureWorktreeBuild(state: OrchestratorState, worktreePath: s
 
   if (exitCode !== 0) {
     log(`cmake configure failed for ${worktreePath}`, "ERROR");
-    const lastLines = stdout.split("\n").slice(-3).join("\n");
-    log(`  ${lastLines}`, "ERROR");
+    const output = (stderr || stdout).trim();
+    const lastLines = output.split("\n").slice(-10).join("\n");
+    if (lastLines) log(lastLines, "ERROR");
     return false;
   }
 

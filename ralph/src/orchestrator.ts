@@ -17,6 +17,7 @@ import {
   stopAllWorkerProcesses, pruneMergedRalphBranches,
 } from "./worktree.js";
 import { spawnWorker, classifyExitReason } from "./worker.js";
+import type { Server } from "node:http";
 import { DashboardState } from "./dashboard/state.js";
 import { startDashboard } from "./dashboard/server.js";
 import { setDashboardState } from "./logger.js";
@@ -126,10 +127,11 @@ export async function runMain(config: Config): Promise<void> {
 
   // Dashboard
   let dashState: DashboardState | null = null;
+  let dashServer: Server | null = null;
   if (!config.noDashboard) {
     dashState = new DashboardState(config, state.logDir, "kanban");
     setDashboardState(dashState);
-    startDashboard(dashState, config.dashboardPort);
+    dashServer = startDashboard(dashState, config.dashboardPort);
   }
 
   const activeJobs = new Map<number, ActiveJob>();
@@ -635,6 +637,15 @@ export async function runMain(config: Config): Promise<void> {
       // Prune stale worktree refs
       gitSync(state.mainRepo, "worktree", "prune");
     }
+  }
+
+  // Shut down the dashboard so the process can exit
+  if (dashServer) {
+    for (const client of dashState!.sseClients) {
+      try { client.end(); } catch {}
+    }
+    dashState!.sseClients.clear();
+    dashServer.close();
   }
 
   console.log();

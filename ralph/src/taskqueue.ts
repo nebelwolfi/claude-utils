@@ -2,6 +2,7 @@ import { existsSync, readFileSync, mkdirSync, rmSync } from "node:fs";
 import { join, basename } from "node:path";
 import { execFileSync } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
+import type { Server } from "node:http";
 import type { Config, WorkerResult, OrchestratorState } from "./types.js";
 import { log } from "./logger.js";
 import { execSync as gitExecSync, gitInDir, gitSync, discoverSubmodules } from "./git.js";
@@ -222,10 +223,11 @@ export async function runTaskQueue(config: Config): Promise<void> {
 
   // Dashboard
   let dashState: DashboardState | null = null;
+  let dashServer: Server | null = null;
   if (!config.noDashboard) {
     dashState = new DashboardState(config, logDir, "taskqueue");
     setDashboardState(dashState);
-    startDashboard(dashState, config.dashboardPort);
+    dashServer = startDashboard(dashState, config.dashboardPort);
   }
 
   const allTasks = loadTasks(config);
@@ -479,6 +481,15 @@ export async function runTaskQueue(config: Config): Promise<void> {
   if (!config.local) {
     log("Draining pending PRs...");
     await drainPendingPRs(state, mergeWorktreePath, workerDirs);
+  }
+
+  // Shut down the dashboard so the process can exit
+  if (dashServer) {
+    for (const client of dashState!.sseClients) {
+      try { client.end(); } catch {}
+    }
+    dashState!.sseClients.clear();
+    dashServer.close();
   }
 
   // Cleanup
